@@ -1,0 +1,170 @@
+@import "tailwindcss";
+
+:root {
+  /* Base surfaces — light, like Groww/IndMoney/Zerodha */
+  --bg-base: #f6f7fb;
+  --surface-1: #ffffff;
+  --surface-2: #f8fafc;
+  --surface-3: #f1f5f9;
+  --border-subtle: #e7eaf3;
+  --border-medium: #d9deeb;
+  --text-primary: #0f1629;
+  --text-secondary: #5b6478;
+  --text-muted: #94a0b8;
+
+  /* Market semantics */
+  --bull-green: #0e9f6e;
+  --bull-green-soft: #e7f9f1;
+  --bear-red: #e5484d;
+  --bear-red-soft: #fdeceb;
+
+  /* One neutral interactive accent for generic actions (links, focus ring) */
+  --brand: #2f6fed;
+  --brand-strong: #1d57d1;
+  --brand-soft: #eaf1ff;
+
+  /* Per-section accent colors, each with a soft tint for badges/backgrounds */
+  --section-portfolio: #2f6fed;
+  --section-portfolio-soft: #eaf1ff;
+  --section-stocks: #0e9f6e;
+  --section-stocks-soft: #e7f9f1;
+  --section-sip: #8b5cf6;
+  --section-sip-soft: #f2eefd;
+  --section-chat: #0891b2;
+  --section-chat-soft: #e6f6fa;
+  --section-research: #f0802a;
+  --section-research-soft: #fef1e6;
+  --section-gold: #d4932a;
+  --section-gold-soft: #fbf3e4;
+
+  --radius-card: 18px;
+  --radius-control: 12px;
+  --radius-pill: 999px;
+
+  --shadow-card: 0 1px 2px rgba(20, 30, 60, 0.04), 0 10px 24px -14px rgba(20, 30, 60, 0.12);
+  --shadow-card-hover: 0 2px 4px rgba(20, 30, 60, 0.05), 0 16px 32px -14px rgba(20, 30, 60, 0.16);
+  --shadow-pop: 0 24px 48px -16px rgba(20, 30, 60, 0.22);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background-color: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.num-tabular {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-geist-mono), monospace;
+}
+
+/* Keyboard focus on links and buttons. Text fields use their own border instead of a second blue box. */
+a:focus-visible,
+button:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+input:focus,
+input:focus-visible,
+textarea:focus,
+textarea:focus-visible {
+  outline: none;
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-base);
+}
+::-webkit-scrollbar-thumb {
+  background: #c7ceDF;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #aab3cc;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+@layer components {
+  /* Shared card chrome */
+  .card {
+    background-color: var(--surface-1);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-card);
+    box-shadow: var(--shadow-card);
+  }
+
+  .card-row {
+    background-color: var(--surface-2);
+    border: 1px solid var(--border-subtle);
+    border-radius: calc(var(--radius-card) - 6px);
+  }
+
+  .card-interactive {
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+  }
+  .card-interactive:hover {
+    border-color: var(--border-medium);
+    box-shadow: var(--shadow-card-hover);
+    transform: translateY(-1px);
+  }
+
+  .nav-pill {
+    border-radius: var(--radius-pill);
+    transition: background-color 0.15s ease, color 0.15s ease;
+  }
+
+  .btn-brand {
+    background-color: var(--brand);
+    color: #ffffff;
+    border-radius: var(--radius-control);
+    transition: background-color 0.15s ease, transform 0.1s ease;
+  }
+  .btn-brand:hover {
+    background-color: var(--brand-strong);
+  }
+  .btn-brand:active {
+    transform: scale(0.98);
+  }
+
+  /* Colored icon badge, the signature Groww/IndMoney category marker */
+  .icon-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 12px;
+    flex-shrink: 0;
+  }
+
+  .skeleton {
+    background-image: linear-gradient(100deg, var(--surface-3) 30%, #e4e8f1 50%, var(--surface-3) 70%);
+    background-size: 200% 100%;
+    animation: skeleton-shimmer 1.5s ease-in-out infinite;
+    border-radius: calc(var(--radius-card) - 6px);
+  }
+}
+
+@keyframes skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
