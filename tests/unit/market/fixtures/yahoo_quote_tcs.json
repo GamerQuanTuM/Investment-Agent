@@ -1,0 +1,22 @@
+{
+  "quoteResponse": {
+    "result": [
+      {
+        "symbol": "TCS.NS",
+        "shortName": "TATA CONSULTANCY SERV LT",
+        "regularMarketPrice": 2075.0,
+        "regularMarketChange": -5.4,
+        "regularMarketChangePercent": -0.26,
+        "regularMarketOpen": 2080.0,
+        "regularMarketDayHigh": 2090.0,
+        "regularMarketDayLow": 2070.0,
+        "regularMarketPreviousClose": 2080.4,
+        "regularMarketVolume": 1234567,
+        "trailingPE": 15.08,
+        "marketCap": 7500000000000,
+        "exchange": "NSI"
+      }
+    ],
+    "error": null
+  }
+}

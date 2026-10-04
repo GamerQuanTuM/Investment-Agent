@@ -39,7 +39,7 @@ export function Footer() {
               <span className="icon-badge h-8 w-8 bg-(--section-gold-soft) text-base font-bold text-(--section-gold)">₹</span>
               <span className="text-sm font-bold tracking-tight text-(--text-primary)">MudraLens</span>
             </Link>
-            <p className="mt-3 max-w-[220px] text-xs leading-relaxed text-(--text-secondary)">
+            <p className="mt-3 max-w-55 text-xs leading-relaxed text-(--text-secondary)">
               Evidence-grounded Indian equity &amp; mutual fund research, with disciplined 3–5 year portfolio guidance.
             </p>
           </div>

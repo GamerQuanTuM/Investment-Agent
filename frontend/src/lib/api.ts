@@ -8,6 +8,19 @@ import {
   GuidanceNote,
   ResearchRunResult,
   FundamentalSnapshot,
+  StockFilings,
+  StockShareholding,
+  StockScore,
+  StockNews,
+  MacroSnapshot,
+  ConcentrationReport,
+  PortfolioAlert,
+  CompareResult,
+  FundSearchResult,
+  FundDetail,
+  FundSipBacktestResult,
+  FundSipProjectResult,
+  SuggestMixResult,
 } from "./types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -58,6 +71,10 @@ export function fetchBrokerVault(): Promise<BrokerVaultState> {
 
 export function fetchIndices(): Promise<{ items: IndexQuote[] }> {
   return readJson<{ items: IndexQuote[] }>("/market/indices");
+}
+
+export function fetchMacroSnapshot(): Promise<MacroSnapshot> {
+  return readJson<MacroSnapshot>("/market/macro");
 }
 
 export function fetchMarketStatus(): Promise<{
@@ -149,6 +166,7 @@ export function sendChat(sessionId: string, message: string) {
     return res.json() as Promise<{
       text: string;
       needs_input: boolean;
+      error?: boolean;
       collected: {
         intent: "stock" | "sip" | null;
         symbol: string | null;
@@ -162,14 +180,122 @@ export function sendChat(sessionId: string, message: string) {
   });
 }
 
+export function fetchFundCatalogue(offset: number, query = "", category = "") {
+  const params = new URLSearchParams({
+    offset: String(offset),
+    limit: "40",
+  });
+  if (query) params.set("q", query);
+  if (category) params.set("category", category);
+  return readJson<{
+    source: string;
+    scheme_count: number;
+    fund_house_count: number;
+    fund_houses: { name: string; scheme_count: number }[];
+    categories: { name: string; count: number }[];
+    items: { scheme_code: string; scheme_name: string; fund_house: string; category: string | null }[];
+    total: number;
+    next_offset: number | null;
+  }>(`/funds/catalogue?${params.toString()}`);
+}
+
 export function fetchFundamentals(symbol: string): Promise<FundamentalSnapshot> {
   return readJson<FundamentalSnapshot>(`/research/${encodeURIComponent(symbol)}`);
+}
+
+export function fetchFilings(symbol: string): Promise<StockFilings> {
+  return readJson<StockFilings>(`/market/stocks/${encodeURIComponent(symbol)}/filings`);
+}
+
+export function fetchShareholding(symbol: string): Promise<StockShareholding> {
+  return readJson<StockShareholding>(`/market/stocks/${encodeURIComponent(symbol)}/shareholding`);
+}
+
+export function fetchStockScore(symbol: string, exchange = "NSE"): Promise<StockScore> {
+  return readJson<StockScore>(`/research/score/${encodeURIComponent(symbol)}?exchange=${exchange}`);
+}
+
+export function fetchStockNews(symbol: string, name?: string): Promise<StockNews> {
+  const params = name ? `?name=${encodeURIComponent(name)}` : "";
+  return readJson<StockNews>(`/market/stocks/${encodeURIComponent(symbol)}/news${params}`);
+}
+
+export function fetchPortfolioConcentration(): Promise<ConcentrationReport> {
+  return readJson<ConcentrationReport>("/market/portfolio/concentration");
+}
+
+export function fetchPortfolioAlerts(): Promise<{ alerts: PortfolioAlert[] }> {
+  return readJson<{ alerts: PortfolioAlert[] }>("/market/portfolio/alerts");
+}
+
+export function compareStocks(symbols: string[], exchange = "NSE"): Promise<CompareResult> {
+  return readJson<CompareResult>(
+    `/research/compare?symbols=${encodeURIComponent(symbols.join(","))}&exchange=${exchange}`,
+  );
 }
 
 export function runResearchPipeline(monthlyBudget: number, userId = "user_default"): Promise<ResearchRunResult> {
   return postJson<ResearchRunResult>("/research/run", {
     user_id: userId,
     monthly_budget: monthlyBudget,
+  });
+}
+
+export function searchFunds(query: string, category?: string, plan?: string): Promise<FundSearchResult> {
+  const params = new URLSearchParams({ q: query });
+  if (category) params.set("category", category);
+  if (plan) params.set("plan", plan);
+  return readJson<FundSearchResult>(`/funds/search?${params.toString()}`);
+}
+
+export function fetchFundDetail(schemeCode: string): Promise<FundDetail> {
+  return readJson<FundDetail>(`/funds/${encodeURIComponent(schemeCode)}`);
+}
+
+export function fundSipBacktest(
+  schemeCode: string,
+  monthly: number,
+  stepUpPct = 0,
+  startDate?: string,
+): Promise<FundSipBacktestResult> {
+  return postJson<FundSipBacktestResult>("/funds/sip/backtest", {
+    scheme_code: schemeCode,
+    monthly,
+    step_up_pct: stepUpPct,
+    start_date: startDate ?? null,
+  });
+}
+
+export function fundSipProject(
+  monthly: number,
+  years: number,
+  annualReturnPct: number,
+  stepUpPct = 0,
+  inflationPct = 0,
+): Promise<FundSipProjectResult> {
+  return postJson<FundSipProjectResult>("/funds/sip/project", {
+    monthly,
+    years,
+    annual_return_pct: annualReturnPct,
+    step_up_pct: stepUpPct,
+    inflation_pct: inflationPct,
+  });
+}
+
+export function suggestFundMix(
+  monthly: number,
+  horizonYears: number,
+  riskProfile: string,
+  spanYears: number,
+  spanMonths: number,
+): Promise<SuggestMixResult> {
+  return postJson<SuggestMixResult>("/funds/sip/suggest", {
+    monthly,
+    horizon_years: horizonYears,
+    risk_profile: riskProfile,
+    return_span: "custom",
+    span_years: spanYears,
+    span_months: spanMonths,
   });
 }
 

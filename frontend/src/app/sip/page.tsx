@@ -1,8 +1,11 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { PiggyBank, Wallet, TrendingUp, Sparkles } from "lucide-react";
+import { PiggyBank, Wallet, TrendingUp, Landmark, Sparkles as SparklesIcon } from "lucide-react";
 import { planSip, SipPlan } from "@/lib/api";
+import { FundSipPanel } from "@/components/FundSipPanel";
+import { RegisteredFunds } from "@/components/RegisteredFunds";
+import { SuggestMixPanel } from "@/components/SuggestMixPanel";
 
 const STYLES = [
   { id: "large", label: "Large cap" },
@@ -13,6 +16,14 @@ const STYLES = [
 
 const ASSUMED_ANNUAL_RETURN_PCT = 12;
 
+const MODES = [
+  { id: "fund", label: "Mutual fund", icon: Landmark, hint: "Backtest and project a SIP in a real fund using its NAV history." },
+  { id: "suggest", label: "Suggest a mix", icon: SparklesIcon, hint: "Get a fund mix matched to your horizon and comfort with risk." },
+  { id: "etf", label: "ETF mix", icon: PiggyBank, hint: "Listed ETFs bought through your broker at the live price." },
+] as const;
+
+type Mode = (typeof MODES)[number]["id"];
+
 function projectSip(monthly: number, years: number, annualReturnPct: number) {
   const months = years * 12;
   const r = annualReturnPct / 100 / 12;
@@ -22,6 +33,7 @@ function projectSip(monthly: number, years: number, annualReturnPct: number) {
 }
 
 export default function SipPage() {
+  const [mode, setMode] = useState<Mode>("fund");
   const [amount, setAmount] = useState(10000);
   const [years, setYears] = useState(10);
   const [style, setStyle] = useState("flexi");
@@ -45,23 +57,61 @@ export default function SipPage() {
     }
   };
 
+  const activeMode = MODES.find((item) => item.id === mode)!;
+
   return (
-    <main className="mx-auto max-w-3xl px-4 py-6">
-      <div className="flex items-center gap-2.5">
-        <span className="icon-badge h-9 w-9 bg-(--section-sip-soft) text-(--section-sip)">
-          <PiggyBank className="h-4.5 w-4.5" />
-        </span>
-        <div>
-          <h1 className="text-xl font-bold tracking-tight text-(--text-primary)">SIP calculator</h1>
-          <p className="text-sm text-(--text-secondary)">
-            A monthly mix across large cap, next 50, bank, and gold ETFs.
-          </p>
+    <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col px-4 py-4 lg:px-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          <span className="icon-badge h-9 w-9 bg-(--section-sip-soft) text-(--section-sip)">
+            <PiggyBank className="h-4.5 w-4.5" />
+          </span>
+          <div>
+            <h1 className="text-lg font-bold tracking-tight text-(--text-primary)">SIP planner</h1>
+            <p className="text-xs text-(--text-secondary)">{activeMode.hint}</p>
+          </div>
+        </div>
+        <div role="tablist" aria-label="SIP mode" className="grid grid-cols-3 gap-1 rounded-2xl border border-(--border-subtle) bg-(--surface-2) p-1">
+          {MODES.map((item) => {
+            const Icon = item.icon;
+            const active = mode === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setMode(item.id)}
+                className={`flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-colors ${
+                  active
+                    ? "bg-(--section-sip) text-white shadow-(--shadow-card)"
+                    : "text-(--text-secondary) hover:bg-(--surface-3)"
+                }`}
+              >
+                <Icon className="h-3.5 w-3.5" />
+                {item.label}
+              </button>
+            );
+          })}
         </div>
       </div>
 
-      <div className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-12">
+      <div className="sip-workspace mt-4 grid min-h-128 flex-1 items-stretch gap-4 lg:grid-cols-[minmax(18rem,24rem)_minmax(0,1fr)]">
+      <div className="min-h-0 min-w-0 lg:overflow-y-auto lg:pr-1">
+      {mode === "fund" && <FundSipPanel />}
+
+      {mode === "suggest" && <SuggestMixPanel />}
+
+      {mode === "etf" && (
+      <>
+      <p className="rounded-xl border border-(--border-subtle) bg-(--surface-2) p-3 text-xs text-(--text-secondary)">
+        This buys listed ETFs through your broker (a market order at the live price), not a mutual-fund SIP through
+        the AMC/RTA — the two run through different mechanisms. For a real mutual fund with NAV-based backtesting,
+        use the <strong className="text-(--text-primary)">Mutual fund</strong> tab instead.
+      </p>
+      <div className="grid grid-cols-1 gap-4">
         {/* Calculator inputs */}
-        <div className="card p-5 lg:col-span-7">
+        <div className="card p-5">
           <div className="flex items-center justify-between">
             <label htmlFor="sip-amount" className="text-sm font-semibold text-(--text-secondary)">Monthly investment</label>
             <span className="num-tabular text-lg font-bold text-(--section-sip)">₹{amount.toLocaleString("en-IN")}</span>
@@ -123,7 +173,7 @@ export default function SipPage() {
         </div>
 
         {/* Projection */}
-        <div className="card flex flex-col justify-between p-5 lg:col-span-5">
+        <div className="card flex flex-col justify-between p-5">
           <div>
             <div className="flex items-center gap-2.5">
               <span className="icon-badge h-9 w-9 bg-(--bull-green-soft) text-(--bull-green)">
@@ -165,7 +215,7 @@ export default function SipPage() {
               </div>
               {plan.style !== plan.requested_style && (
                 <span className="flex items-center gap-1 rounded-full bg-(--section-chat-soft) px-2.5 py-1 text-[11px] font-semibold text-(--section-chat)">
-                  <Sparkles className="h-3 w-3" /> AI switched you to {plan.style} cap
+                  Adjusted to {plan.style} cap for this horizon
                 </span>
               )}
             </div>
@@ -189,6 +239,11 @@ export default function SipPage() {
             <p className="mt-3 text-xs text-(--text-secondary)">{plan.note}</p>
           </section>
         )}
+      </div>
+      </>
+      )}
+      </div>
+      <RegisteredFunds />
       </div>
     </main>
   );

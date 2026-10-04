@@ -14,6 +14,30 @@ logger = logging.getLogger(__name__)
 _TIER_OVERRIDES: dict[str, BaseChatModel | Runnable[Any, Any]] = {}
 
 
+def extract_text(content: Any) -> str:
+    """Extract plain text from a LangChain message's `.content`.
+
+    Some providers (observed with Gemini) return `.content` as a list of structured
+    blocks (`[{"type": "text", "text": "...", "extras": {"signature": "<huge opaque
+    blob>"}}]`) rather than a plain string. Every narration call site in this codebase
+    used to fall back to `str(response.content)` for anything non-string, which stringifies
+    that entire block list — signature blob included — straight into a user-facing
+    explanation. This pulls out just the text fields instead.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and isinstance(block.get("text"), str):
+                parts.append(block["text"])
+        if parts:
+            return "".join(parts)
+    return str(content)
+
+
 def register_tier_override(
     tier: str | ModelTier, model: BaseChatModel | Runnable[Any, Any]
 ) -> None:

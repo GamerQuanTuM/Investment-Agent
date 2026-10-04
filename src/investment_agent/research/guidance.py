@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
 
-from investment_agent.llm.factory import get_llm
+from investment_agent.llm.factory import extract_text, get_llm
 from investment_agent.market.tradingview import merge_fundamentals, tradingview_fundamentals
 from investment_agent.market.yahoo_market import chart_symbol, company_fundamentals, quote_symbol
+from investment_agent.research.stock_score import build_stock_score
 
 logger = logging.getLogger(__name__)
 
@@ -144,10 +146,20 @@ async def guide_symbol(
     narrative = await _narrate(facts, rules)
     risk_level = narrative.get("risk_level") or _fallback_risk_level(narrative.get("stance") or rules["stance"])
     fallback_good, fallback_bad = _plain_language_points(fundamentals, pe, window_return, total_years)
+
+    stance = narrative.get("stance") or rules["stance"]
+    multi_factor_score = await _multi_factor_overall_score(quote["symbol"], exchange)
+    # Gap 4: rule_stance stays the hard floor (a blocker can never be overridden); the
+    # richer F2 score may only *tighten* a CONSIDER down to WAIT when it disagrees, never
+    # loosen WAIT/AVOID — same invariant _narrate already enforces for the LLM's opinion.
+    if stance == "CONSIDER" and multi_factor_score is not None and multi_factor_score < 50.0:
+        stance = "WAIT"
+
     return {
         "symbol": quote["symbol"],
         "name": quote["name"],
-        "stance": narrative.get("stance") or rules["stance"],
+        "stance": stance,
+        "multi_factor_score": multi_factor_score,
         "summary": narrative.get("summary") or _fallback_summary(quote["symbol"], rules),
         "reasons": narrative.get("reasons") or rules["reasons"],
         "blockers": narrative.get("blockers") or rules["blockers"],
@@ -244,6 +256,26 @@ def _plain_language_points(
     return good, bad
 
 
+async def _multi_factor_overall_score(symbol: str, exchange: str) -> float | None:
+    """Gap 4: the F2 deterministic score (research/stock_score.py), best-effort.
+
+    Bounded with a timeout and wrapped so a slow/failing score never blocks or breaks
+    `/research/guidance` — it can only ever add a stricter check on top of `rule_stance`,
+    never become a hard dependency of this already-shipped endpoint. Most of the data this
+    needs (quote, fundamentals, statements) was just fetched above and is now cache-warm
+    (Gap 6), so this second fetch is cheap in practice, not a duplicate full round trip.
+    """
+    try:
+        card = await asyncio.wait_for(build_stock_score(symbol, exchange), timeout=12.0)
+    except Exception as exc:
+        logger.info("Multi-factor score unavailable for %s: %s", symbol, exc)
+        return None
+    if card.get("status") != "OK":
+        return None
+    overall = card.get("overall")
+    return float(overall) if isinstance(overall, (int, float)) else None
+
+
 def _fallback_risk_level(stance: str) -> str:
     return {"CONSIDER": "MEDIUM", "WAIT": "MEDIUM", "AVOID": "HIGH"}.get(stance, "MEDIUM")
 
@@ -297,7 +329,7 @@ async def _narrate(facts: dict[str, Any], rules: dict[str, Any]) -> dict[str, An
     try:
         model = get_llm("primary")
         reply = await model.ainvoke(prompt)
-        text = reply.content if isinstance(reply.content, str) else str(reply.content)
+        text = extract_text(reply.content)
         start = text.find("{")
         end = text.rfind("}")
         if start < 0 or end <= start:

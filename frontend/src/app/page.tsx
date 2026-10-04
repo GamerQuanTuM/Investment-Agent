@@ -5,7 +5,16 @@ import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-quer
 import { Header } from "@/components/Header";
 import { BrokerVaultCard } from "@/components/BrokerVaultCard";
 import { MarketLoadingScreen } from "@/components/MarketLoadingScreen";
-import { fetchBrokerVault, fetchHealthStatus, fetchIndices, fetchMarketStatus, fetchTrending, refreshMarket } from "@/lib/api";
+import {
+  fetchBrokerVault,
+  fetchHealthStatus,
+  fetchIndices,
+  fetchMacroSnapshot,
+  fetchMarketStatus,
+  fetchTrending,
+  refreshMarket,
+} from "@/lib/api";
+import { MarketMoodStrip } from "@/components/MarketMoodStrip";
 import Link from "next/link";
 import {
   TrendingUp,
@@ -101,6 +110,12 @@ export default function InvestmentCockpitPage() {
     queryFn: fetchIndices,
     retry: false,
   });
+  const macro = useQuery({
+    queryKey: ["macro"],
+    queryFn: fetchMacroSnapshot,
+    retry: false,
+    staleTime: 10 * 60 * 1000,
+  });
   const trending = useInfiniteQuery({
     queryKey: ["trending"],
     initialPageParam: 0,
@@ -127,8 +142,8 @@ export default function InvestmentCockpitPage() {
     (trending.isLoading || Boolean(firstPage?.pending && firstPage.items.length === 0));
   const loadingLabel =
     firstPage?.universe
-      ? `Scanning NSE prices ${firstPage.scanned ?? 0} of ${firstPage.universe}`
-      : "Fetching live NSE prices";
+      ? `Scanning stock prices ${firstPage.scanned ?? 0} of ${firstPage.universe}`
+      : "Fetching live stock prices";
 
   const b = broker.data;
   const pnlUp = (b?.day_change_pnl ?? 0) >= 0;
@@ -150,6 +165,8 @@ export default function InvestmentCockpitPage() {
 
       <main className="mx-auto w-full max-w-7xl flex-1 p-4 lg:px-8 lg:py-6">
         <Greeting />
+
+        <MarketMoodStrip indices={indices.data?.items ?? []} macro={macro.data ?? null} loading={indices.isLoading} />
 
         {/* Quick actions */}
         <div className="mt-3 grid grid-cols-4 gap-2.5">

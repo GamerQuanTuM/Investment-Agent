@@ -39,15 +39,16 @@ type Bubble = {
   time: string;
   guidance?: GuidanceNote;
   plan?: Plan;
+  isError?: boolean;
 };
 
 const EMPTY_COLLECTED: Collected = { intent: null, symbol: null, horizon_years: null, monthly_amount: null, risk: null };
 
 const SUGGESTIONS = [
   "Should I buy TCS for 5 years?",
-  "Build me a ₹10,000 SIP for 10 years, flexi cap",
+  "I'm new to investing — where do I start with ₹10,000 a month?",
   "Is RELIANCE good for a 3 year hold?",
-  "I want a small cap SIP of ₹5,000 for 7 years",
+  "I have ₹5,000 a month for 7 years, not sure what to pick",
 ];
 
 const stanceTone: Record<GuidanceNote["stance"], string> = {
@@ -63,7 +64,9 @@ function timestamp() {
 function freshGreeting(): Bubble {
   return {
     role: "agent",
-    text: "Ask about a stock or a SIP. I will ask for the holding span, monthly amount, and cap style before I answer.",
+    text:
+      "Ask about a stock, or just say how much you'd like to invest each month. I'll ask a " +
+      "few simple questions — no investing experience needed, and you can say \"not sure\" to any of them.",
     time: timestamp(),
   };
 }
@@ -144,7 +147,7 @@ export default function ChatPage() {
       setCollected(reply.collected);
       setMessages((current) => [
         ...current,
-        { role: "agent", text: reply.text, time: timestamp(), guidance: reply.guidance, plan: reply.plan },
+        { role: "agent", text: reply.text, time: timestamp(), guidance: reply.guidance, plan: reply.plan, isError: reply.error },
       ]);
     } catch (err) {
       setMessages((current) => [
@@ -195,7 +198,7 @@ export default function ChatPage() {
         <FactChip icon={Tag} label="Symbol" value={collected.symbol} />
         <FactChip icon={CalendarClock} label="Horizon" value={collected.horizon_years ? `${collected.horizon_years}y` : null} />
         <FactChip icon={Wallet} label="Monthly" value={collected.monthly_amount ? `₹${collected.monthly_amount.toLocaleString("en-IN")}` : null} />
-        <FactChip icon={Gauge} label="Style" value={collected.risk} />
+        <FactChip icon={Gauge} label="Risk comfort" value={collected.risk} />
       </div>
 
       {/* Chat panel */}
@@ -215,7 +218,11 @@ export default function ChatPage() {
                 <div className={`flex max-w-[78%] flex-col ${isAgent ? "items-start" : "items-end"}`}>
                   <div
                     className={`rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed whitespace-pre-line ${
-                      isAgent ? "card-row text-(--text-primary)" : "bg-(--section-chat) text-white"
+                      message.isError
+                        ? "border border-(--bear-red)/40 bg-(--bear-red-soft) text-(--bear-red)"
+                        : isAgent
+                          ? "card-row text-(--text-primary)"
+                          : "bg-(--section-chat) text-white"
                     }`}
                   >
                     {message.text}

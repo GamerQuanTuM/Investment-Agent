@@ -3,7 +3,7 @@ from datetime import datetime
 from sqlalchemy import JSON, DateTime, Float, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from investment_agent.db.models.base import Base, TimestampMixin
+from investment_agent.db.models.base import Base, TimestampMixin, utc_now
 
 
 class Instrument(Base, TimestampMixin):
@@ -74,6 +74,35 @@ class NavRecord(Base, TimestampMixin):
     nav: Mapped[float] = mapped_column(Float, nullable=False)
     nav_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     source_url: Mapped[str] = mapped_column(String(500), nullable=False)
+
+
+class MutualFundScheme(Base):
+    """AMFI scheme master + latest NAV (Workstream B, B1).
+
+    `scheme_code` is the primary key rather than the usual `TimestampMixin` surrogate `id`
+    — AMFI scheme codes are already a stable, unique identifier, and the spec for this
+    table asks for scheme_code as PK explicitly. `plan`/`option`/`sebi_group` are derived
+    deterministically from the scheme name and category text in `market/amfi.py`
+    (`classify_plan`/`classify_option`/`classify_sebi_group`) during sync, never guessed by
+    an LLM.
+    """
+
+    __tablename__ = "mutual_fund_schemes"
+
+    scheme_code: Mapped[str] = mapped_column(String(20), primary_key=True)
+    name: Mapped[str] = mapped_column(String(400), nullable=False)
+    isin: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    fund_house: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    category: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sebi_group: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    plan: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    option: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    latest_nav: Mapped[float | None] = mapped_column(Float, nullable=True)
+    nav_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
 
 
 class EvidenceRecord(Base, TimestampMixin):

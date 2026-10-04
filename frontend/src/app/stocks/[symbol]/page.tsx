@@ -20,17 +20,52 @@ import {
   ExternalLink,
   ShieldCheck,
   ShieldAlert,
+  Megaphone,
+  PieChart,
+  Gauge,
+  Newspaper,
+  TrendingUp,
+  TrendingDown,
+  Minus,
 } from "lucide-react";
-import { fetchFundamentals, fetchHistory, fetchQuote } from "@/lib/api";
+import {
+  fetchFilings,
+  fetchFundamentals,
+  fetchHistory,
+  fetchQuote,
+  fetchShareholding,
+  fetchStockNews,
+  fetchStockScore,
+} from "@/lib/api";
 import { MarketLoadingScreen } from "@/components/MarketLoadingScreen";
 import { PriceChart } from "@/components/PriceChart";
 import { AgentGuidance } from "@/components/AgentGuidance";
+import { ScoreRing } from "@/components/ScoreRing";
+import type { ScoreBlock } from "@/lib/types";
 
 const RANGES = ["1d", "1w", "1m", "3m", "6m", "1y", "5y"] as const;
 const TABS = [
   { id: "overview", label: "Chart", icon: BarChart3 },
+  { id: "score", label: "Score", icon: Gauge },
   { id: "fundamentals", label: "Fundamentals", icon: FileSpreadsheet },
+  { id: "filings", label: "Filings", icon: Megaphone },
+  { id: "news", label: "News", icon: Newspaper },
+  { id: "shareholding", label: "Shareholding", icon: PieChart },
   { id: "guidance", label: "AI guidance", icon: Sparkles },
+] as const;
+
+const SCORE_BLOCKS: { key: "quality" | "valuation" | "momentum" | "risk"; label: string }[] = [
+  { key: "quality", label: "Quality" },
+  { key: "valuation", label: "Valuation" },
+  { key: "momentum", label: "Momentum" },
+  { key: "risk", label: "Risk" },
+];
+
+const SHAREHOLDING_SEGMENTS = [
+  { key: "promoter_pct", label: "Promoter", color: "var(--section-portfolio)" },
+  { key: "fii_pct", label: "FII", color: "var(--section-research)" },
+  { key: "dii_pct", label: "DII", color: "var(--section-sip)" },
+  { key: "public_pct", label: "Public", color: "var(--text-muted)" },
 ] as const;
 
 export default function StockPage() {
@@ -59,6 +94,30 @@ export default function StockPage() {
     enabled: Boolean(symbol) && tab === "fundamentals",
     retry: false,
   });
+  const filings = useQuery({
+    queryKey: ["filings", symbol],
+    queryFn: () => fetchFilings(symbol),
+    enabled: Boolean(symbol) && tab === "filings",
+    retry: false,
+  });
+  const shareholding = useQuery({
+    queryKey: ["shareholding", symbol],
+    queryFn: () => fetchShareholding(symbol),
+    enabled: Boolean(symbol) && tab === "shareholding",
+    retry: false,
+  });
+  const news = useQuery({
+    queryKey: ["news", symbol],
+    queryFn: () => fetchStockNews(symbol, quote.data?.name),
+    enabled: Boolean(symbol) && tab === "news",
+    retry: false,
+  });
+  const score = useQuery({
+    queryKey: ["score", symbol, exchange],
+    queryFn: () => fetchStockScore(symbol, exchange),
+    enabled: Boolean(symbol) && tab === "score",
+    retry: false,
+  });
 
   const price = quote.data;
   const up = (price?.day_change_percentage ?? 0) >= 0;
@@ -83,7 +142,7 @@ export default function StockPage() {
 
   return (
     <main className="mx-auto min-h-screen w-full max-w-7xl px-4 pb-10 pt-6 lg:px-8 text-(--text-primary)">
-      <Link href="/" className="flex items-center gap-1 text-xs font-medium text-(--text-secondary) transition-colors hover:text-(--text-primary)">
+      <Link href="/stocks" className="flex items-center gap-1 text-xs font-medium text-(--text-secondary) transition-colors hover:text-(--text-primary)">
         <ArrowLeft className="h-3.5 w-3.5" /> Back to movers
       </Link>
 
@@ -189,6 +248,93 @@ export default function StockPage() {
             </>
           )}
 
+          {tab === "score" && (
+            <div className="mt-4">
+              {score.isLoading && (
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  {Array.from({ length: 4 }).map((_, i) => (
+                    <div key={i} className="skeleton h-32 w-full" />
+                  ))}
+                </div>
+              )}
+              {score.isError && (
+                <div className="card-row flex items-center gap-2 p-4 text-sm text-(--bear-red)">
+                  <ShieldAlert className="h-4 w-4 shrink-0" />
+                  {score.error instanceof Error ? score.error.message : "Score unavailable."}
+                </div>
+              )}
+              {score.data && score.data.status === "DATA_UNAVAILABLE" && (
+                <div className="card-row flex items-start gap-2.5 p-4 text-sm">
+                  <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-(--section-gold)" />
+                  <div>
+                    <p className="font-semibold text-(--text-primary)">Data unavailable</p>
+                    <p className="mt-1 text-xs text-(--text-secondary)">
+                      {score.data.message || `${symbol} could not be scored right now.`}
+                    </p>
+                  </div>
+                </div>
+              )}
+              {score.data && score.data.status === "OK" && (
+                <>
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                    {SCORE_BLOCKS.map((block) => (
+                      <ScoreRing key={block.key} label={block.label} score={score.data![block.key]?.score ?? null} />
+                    ))}
+                  </div>
+
+                  <div className="card mt-4 p-5">
+                    <div className="flex items-center justify-between gap-3">
+                      <h2 className="text-sm font-bold text-(--text-primary)">Overall score</h2>
+                      <span className="num-tabular text-2xl font-bold text-(--text-primary)">
+                        {score.data.overall != null ? Math.round(score.data.overall) : "—"}
+                        <span className="text-sm font-normal text-(--text-secondary)">/100</span>
+                      </span>
+                    </div>
+                    {score.data.explanation && (
+                      <p className="mt-2 text-sm leading-relaxed text-(--text-secondary)">{score.data.explanation}</p>
+                    )}
+                  </div>
+
+                  <div className="mt-4 space-y-3">
+                    {SCORE_BLOCKS.map((block) => {
+                      const data: ScoreBlock | undefined = score.data![block.key];
+                      if (!data) return null;
+                      return (
+                        <div key={block.key} className="card p-4">
+                          <h3 className="text-xs font-bold uppercase tracking-wide text-(--text-secondary)">
+                            Why this {block.label.toLowerCase()} score
+                          </h3>
+                          <div className="mt-2.5 space-y-2">
+                            {data.inputs.map((input) => (
+                              <div key={input.label} className="flex items-center justify-between gap-3 text-xs">
+                                <span className="text-(--text-secondary)">{input.label}</span>
+                                <span className="flex items-center gap-2">
+                                  <span className="num-tabular font-semibold text-(--text-primary)">
+                                    {input.value != null ? `${input.value}${input.unit === "pctile" ? " pctile" : input.unit}` : "Data unavailable"}
+                                  </span>
+                                  {input.benchmark != null && (
+                                    <span className="text-(--text-muted)">
+                                      vs {input.benchmark}
+                                      {input.unit === "pctile" ? " pctile" : input.unit} ({input.benchmark_label})
+                                    </span>
+                                  )}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {score.data.valuation_note && (
+                    <p className="mt-3 text-[11px] text-(--text-muted)">{score.data.valuation_note}</p>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
           {tab === "fundamentals" && (
             <div className="mt-4">
               {fundamentals.isLoading && (
@@ -249,6 +395,216 @@ export default function StockPage() {
                       <ExternalLink className="h-3 w-3" /> Source: {fundamentals.data.source_name}
                     </a>
                   )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {tab === "filings" && (
+            <div className="mt-4">
+              {filings.isLoading && (
+                <div className="space-y-2.5">
+                  <div className="skeleton h-16 w-full" />
+                  <div className="skeleton h-16 w-full" />
+                  <div className="skeleton h-16 w-full" />
+                </div>
+              )}
+              {filings.isError && (
+                <div className="card-row flex items-center gap-2 p-4 text-sm text-(--bear-red)">
+                  <ShieldAlert className="h-4 w-4 shrink-0" />
+                  {filings.error instanceof Error ? filings.error.message : "Filings unavailable."}
+                </div>
+              )}
+              {filings.data && filings.data.status === "DATA_UNAVAILABLE" && (
+                <div className="card-row flex items-start gap-2.5 p-4 text-sm">
+                  <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-(--section-gold)" />
+                  <div>
+                    <p className="font-semibold text-(--text-primary)">Data unavailable</p>
+                    <p className="mt-1 text-xs text-(--text-secondary)">
+                      NSE corporate announcements could not be fetched for {symbol} right now.
+                    </p>
+                  </div>
+                </div>
+              )}
+              {filings.data && filings.data.filings.length > 0 && (
+                <div className="card divide-y divide-(--border-subtle) overflow-hidden">
+                  {filings.data.filings.map((item, index) => (
+                    <div key={`${item.announced_at}-${index}`} className="flex items-start gap-3 p-4">
+                      <span className="icon-badge mt-0.5 h-8 w-8 shrink-0 bg-(--section-research-soft) text-(--section-research)">
+                        <Megaphone className="h-4 w-4" />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="rounded-full bg-(--surface-3) px-2 py-0.5 text-[11px] font-semibold text-(--text-secondary)">
+                            {item.category}
+                          </span>
+                          <span className="text-[11px] text-(--text-muted)">
+                            {item.announced_at ? new Date(item.announced_at).toLocaleDateString("en-IN") : "Date unavailable"}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-sm text-(--text-primary)">{item.subject}</p>
+                        {item.attachment_url && (
+                          <a
+                            href={item.attachment_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="mt-1.5 flex items-center gap-1 text-xs font-semibold text-(--section-portfolio) hover:underline"
+                          >
+                            <ExternalLink className="h-3 w-3" /> View filing
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {tab === "news" && (
+            <div className="mt-4">
+              {news.isLoading && (
+                <div className="space-y-2.5">
+                  <div className="skeleton h-16 w-full" />
+                  <div className="skeleton h-16 w-full" />
+                  <div className="skeleton h-16 w-full" />
+                </div>
+              )}
+              {news.isError && (
+                <div className="card-row flex items-center gap-2 p-4 text-sm text-(--bear-red)">
+                  <ShieldAlert className="h-4 w-4 shrink-0" />
+                  {news.error instanceof Error ? news.error.message : "News unavailable."}
+                </div>
+              )}
+              {news.data && news.data.status === "DATA_UNAVAILABLE" && (
+                <div className="card-row flex items-start gap-2.5 p-4 text-sm">
+                  <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-(--section-gold)" />
+                  <div>
+                    <p className="font-semibold text-(--text-primary)">Data unavailable</p>
+                    <p className="mt-1 text-xs text-(--text-secondary)">
+                      No recent news headlines could be fetched for {symbol} right now.
+                    </p>
+                  </div>
+                </div>
+              )}
+              {news.data && news.data.status === "OK" && (
+                <>
+                  <div className="card-row mb-3 flex items-center gap-2.5 p-3.5">
+                    {news.data.sentiment.label === "POSITIVE" && <TrendingUp className="h-4 w-4 text-(--bull-green)" />}
+                    {news.data.sentiment.label === "NEGATIVE" && <TrendingDown className="h-4 w-4 text-(--bear-red)" />}
+                    {news.data.sentiment.label === "NEUTRAL" && <Minus className="h-4 w-4 text-(--text-muted)" />}
+                    <div className="text-xs text-(--text-secondary)">
+                      <span
+                        className={`font-semibold ${
+                          news.data.sentiment.label === "POSITIVE"
+                            ? "text-(--bull-green)"
+                            : news.data.sentiment.label === "NEGATIVE"
+                              ? "text-(--bear-red)"
+                              : "text-(--text-primary)"
+                        }`}
+                      >
+                        {news.data.sentiment.label}
+                      </span>{" "}
+                      news sentiment · {news.data.sentiment.positive_count} positive, {news.data.sentiment.negative_count} negative
+                      out of {news.data.sentiment.total_articles} headlines — a keyword-lexicon score, not an AI sentiment model.
+                    </div>
+                  </div>
+                  <div className="card divide-y divide-(--border-subtle) overflow-hidden">
+                    {news.data.articles.map((article, index) => (
+                      <a
+                        key={`${article.title}-${index}`}
+                        href={article.link ?? undefined}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="card-interactive flex items-start gap-3 p-4"
+                      >
+                        <span className="icon-badge mt-0.5 h-8 w-8 shrink-0 bg-(--section-chat-soft) text-(--section-chat)">
+                          <Newspaper className="h-4 w-4" />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm text-(--text-primary)">{article.title}</p>
+                          <div className="mt-1 flex items-center gap-2 text-[11px] text-(--text-muted)">
+                            <span>{article.source_name}</span>
+                            {article.published_at && (
+                              <>
+                                <span>·</span>
+                                <span>{new Date(article.published_at).toLocaleDateString("en-IN")}</span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </a>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {tab === "shareholding" && (
+            <div className="mt-4">
+              {shareholding.isLoading && (
+                <div className="space-y-2.5">
+                  <div className="skeleton h-14 w-full" />
+                  <div className="skeleton h-14 w-full" />
+                </div>
+              )}
+              {shareholding.isError && (
+                <div className="card-row flex items-center gap-2 p-4 text-sm text-(--bear-red)">
+                  <ShieldAlert className="h-4 w-4 shrink-0" />
+                  {shareholding.error instanceof Error ? shareholding.error.message : "Shareholding unavailable."}
+                </div>
+              )}
+              {shareholding.data && shareholding.data.status === "DATA_UNAVAILABLE" && (
+                <div className="card-row flex items-start gap-2.5 p-4 text-sm">
+                  <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-(--section-gold)" />
+                  <div>
+                    <p className="font-semibold text-(--text-primary)">Data unavailable</p>
+                    <p className="mt-1 text-xs text-(--text-secondary)">
+                      NSE shareholding pattern could not be fetched for {symbol} right now.
+                    </p>
+                  </div>
+                </div>
+              )}
+              {shareholding.data && shareholding.data.quarters.length > 0 && (
+                <div className="card p-5">
+                  <div className="flex items-center gap-4 text-[11px] text-(--text-secondary)">
+                    {SHAREHOLDING_SEGMENTS.map((segment) => (
+                      <span key={segment.key} className="flex items-center gap-1.5">
+                        <span className="h-2 w-2 rounded-full" style={{ backgroundColor: segment.color }} />
+                        {segment.label}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="mt-4 space-y-3">
+                    {shareholding.data.quarters.map((quarter, index) => (
+                      <div key={`${quarter.period_end}-${index}`}>
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-semibold text-(--text-primary)">
+                            {quarter.period_end ? new Date(quarter.period_end).toLocaleDateString("en-IN", { month: "short", year: "numeric" }) : "Period unavailable"}
+                          </span>
+                          {quarter.promoter_pledge_pct != null && (
+                            <span className={`font-semibold ${quarter.promoter_pledge_pct > 0 ? "text-(--bear-red)" : "text-(--bull-green)"}`}>
+                              Pledge {quarter.promoter_pledge_pct}%
+                            </span>
+                          )}
+                        </div>
+                        <div className="mt-1.5 flex h-3 w-full overflow-hidden rounded-full bg-(--surface-3)">
+                          {SHAREHOLDING_SEGMENTS.map((segment) => {
+                            const value = quarter[segment.key];
+                            if (value == null) return null;
+                            return (
+                              <div
+                                key={segment.key}
+                                style={{ width: `${value}%`, backgroundColor: segment.color }}
+                                title={`${segment.label}: ${value}%`}
+                              />
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>

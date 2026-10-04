@@ -5,8 +5,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from investment_agent.api.routes import health_router, market_router, research_router
+from investment_agent.api.routes import funds_router, health_router, market_router, research_router
 from investment_agent.config.settings import get_settings
+from investment_agent.market.cache import close_cache, init_cache
 
 logger = logging.getLogger("investment_agent")
 settings = get_settings()
@@ -27,7 +28,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         f"Reasoning: {settings.REASONING_LLM_PROVIDER}:{settings.REASONING_LLM_MODEL} | "
         f"Local: {settings.LOCAL_LLM_PROVIDER}:{settings.LOCAL_LLM_MODEL}"
     )
+    await init_cache()
     yield
+    await close_cache()
     logger.info(f"Shutting down {settings.APP_NAME}")
 
 
@@ -53,6 +56,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(market_router)
     app.include_router(research_router)
+    app.include_router(funds_router)
 
     return app
 

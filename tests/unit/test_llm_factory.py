@@ -10,6 +10,7 @@ from investment_agent.llm.config import LLMModelConfig
 from investment_agent.llm.factory import (
     build_routing_config,
     create_chat_model,
+    extract_text,
     get_llm,
     register_tier_override,
 )
@@ -113,3 +114,29 @@ def test_tier_override():
 
     selected = get_llm("primary")
     assert selected is dummy
+
+
+# --- extract_text ----------------------------------------------------------------------
+# Regression coverage for a real bug found via manual verification: Gemini (observed live,
+# not simulated) returns `.content` as a list of structured blocks with a huge opaque
+# "signature" field rather than a plain string. Every narration call site used to fall back
+# to `str(response.content)` for anything non-string, which stringified that whole block
+# list -- signature blob included -- straight into a user-facing explanation.
+
+
+def test_extract_text_plain_string_passthrough():
+    assert extract_text("already plain text") == "already plain text"
+
+
+def test_extract_text_pulls_text_field_from_block_list():
+    content = [{"type": "text", "text": "This is the real explanation.", "extras": {"signature": "x" * 5000}}]
+    assert extract_text(content) == "This is the real explanation."
+
+
+def test_extract_text_concatenates_multiple_text_blocks():
+    content = [{"type": "text", "text": "Part one. "}, {"type": "text", "text": "Part two."}]
+    assert extract_text(content) == "Part one. Part two."
+
+
+def test_extract_text_falls_back_to_str_for_unrecognized_shape():
+    assert extract_text(12345) == "12345"

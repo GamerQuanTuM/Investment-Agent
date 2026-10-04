@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from investment_agent.config.settings import Settings, get_settings
 from investment_agent.db.models.base import utc_now
-from investment_agent.db.models.market import DailyBar, EvidenceRecord, Instrument, NavRecord
+from investment_agent.db.models.market import (
+    DailyBar,
+    EvidenceRecord,
+    Instrument,
+    MutualFundScheme,
+    NavRecord,
+)
 from investment_agent.db.models.portfolio import Holding, Portfolio
 from investment_agent.db.models.user import User
 from investment_agent.db.session import async_session_factory
@@ -30,23 +36,181 @@ def _chunks(items: list[str], size: int) -> list[list[str]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
+async def sync_mutual_fund_schemes(settings: Settings | None = None) -> dict[str, Any]:
+    """Workstream B, B1: load the full AMFI scheme master (every scheme, not just the
+    watchlist in AMFI_SCHEME_CODES) and upsert it with the derived plan/option/sebi_group
+    classification. Free and keyless, so — like `sync_fundamentals` — this does not require
+    INDstocks to be configured.
+    """
+    settings = settings or get_settings()
+    result: dict[str, Any] = {"synced": 0, "warnings": []}
+    try:
+        text = await fetch_nav_file(settings.AMFI_NAV_URL)
+    except Exception as exc:
+        result["warnings"].append(f"AMFI scheme master download failed: {exc}")
+        return result
+
+    rows = parse_nav_file(text, scheme_codes=None)
+    if not rows:
+        result["warnings"].append("AMFI scheme master returned no parsable rows.")
+        return result
+
+    now = utc_now()
+    async with async_session_factory() as session:
+        for row in rows:
+            # parse_nav_file's return type is intentionally the loose dict[str, object]
+            # shared with the pre-existing NAV-record parsing below; narrow the one field
+            # that needs a numeric operation rather than widening that shared signature.
+            nav_value = cast(float, row["nav"])
+            stmt = pg_insert(MutualFundScheme).values(
+                scheme_code=str(row["scheme_code"]),
+                name=str(row["scheme_name"]),
+                isin=row.get("isin"),
+                fund_house=row.get("fund_house"),
+                category=row.get("category"),
+                sebi_group=row.get("sebi_group"),
+                plan=row.get("plan"),
+                option=row.get("option"),
+                latest_nav=nav_value,
+                nav_date=row["nav_date"],
+                created_at=now,
+                updated_at=now,
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["scheme_code"],
+                set_={
+                    "name": str(row["scheme_name"]),
+                    "isin": row.get("isin"),
+                    "fund_house": row.get("fund_house"),
+                    "category": row.get("category"),
+                    "sebi_group": row.get("sebi_group"),
+                    "plan": row.get("plan"),
+                    "option": row.get("option"),
+                    "latest_nav": nav_value,
+                    "nav_date": row["nav_date"],
+                    "updated_at": now,
+                },
+            )
+            await session.execute(stmt)
+        await session.commit()
+    result["synced"] = len(rows)
+    return result
+
+
+async def sync_fundamentals(
+    settings: Settings | None = None, symbols: list[str] | None = None
+) -> dict[str, Any]:
+    """Gap 2: automatic fundamentals ingest — Yahoo financial statements + NSE shareholding.
+
+    Free and keyless, so unlike the rest of this module it does **not** require INDstocks
+    to be configured — `refresh_market_data` calls this before the broker-specific gate so
+    fundamentals sync for users who haven't connected a broker yet. ROCE, FCF, and
+    revenue/profit CAGR are computed in `portfolio/calculations.py` (never by the LLM);
+    anything the source doesn't provide stays None (DATA_UNAVAILABLE), never guessed.
+    """
+    from investment_agent.market.fundamentals import store_fundamental_snapshots
+    from investment_agent.market.nse import get_shareholding, latest_promoter_pledge_pct
+    from investment_agent.market.yahoo_market import (
+        company_fundamentals,
+        financial_statement_history,
+    )
+    from investment_agent.portfolio.calculations import derive_ratios_from_statements
+    from investment_agent.research.evidence import SourceType
+
+    settings = settings or get_settings()
+    target_symbols = symbols if symbols is not None else settings.indstocks_watchlist
+    result: dict[str, Any] = {"synced": 0, "warnings": []}
+    if not target_symbols:
+        result["warnings"].append(
+            "No watchlist symbols configured (INDSTOCKS_WATCHLIST); fundamentals auto-ingest skipped."
+        )
+        return result
+
+    now = utc_now()
+    rows: list[dict[str, Any]] = []
+    for symbol in target_symbols:
+        try:
+            fundamentals = await company_fundamentals(symbol, "NSE")
+            statements = await financial_statement_history(symbol, "NSE")
+        except Exception as exc:
+            result["warnings"].append(f"{symbol}: Yahoo fundamentals fetch failed ({exc})")
+            continue
+        if not fundamentals:
+            result["warnings"].append(f"{symbol}: DATA_UNAVAILABLE from Yahoo company profile")
+            continue
+
+        ratios = derive_ratios_from_statements(statements)
+        try:
+            shareholding = await get_shareholding(symbol)
+            pledge_pct = latest_promoter_pledge_pct(shareholding)
+        except Exception:
+            pledge_pct = None
+
+        rows.append(
+            {
+                "symbol": symbol,
+                "name": symbol,
+                "sector": fundamentals.get("sector") or "Unclassified",
+                "asset_type": "stock",
+                "data_date": now,
+                "roe_pct": fundamentals.get("roe_pct"),
+                "roce_pct": ratios.get("roce_pct"),
+                "debt_to_equity": fundamentals.get("debt_to_equity"),
+                "promoter_pledge_pct": pledge_pct,
+                "revenue_growth_3y_cagr_pct": ratios.get("revenue_growth_3y_cagr_pct"),
+                "profit_growth_3y_cagr_pct": ratios.get("profit_growth_3y_cagr_pct"),
+                "eps": fundamentals.get("eps"),
+                "book_value_per_share": fundamentals.get("book_value"),
+                "market_cap_cr": None,
+                # No dedicated FCF column on FundamentalSnapshot yet; carried in raw_payload
+                # (store_fundamental_snapshots persists the whole row there) rather than
+                # forcing a migration mid-step.
+                "fcf_cr": ratios.get("fcf"),
+                "source_name": "Yahoo Finance financial statements",
+                "source_url": f"https://finance.yahoo.com/quote/{symbol}.NS/financials",
+                "source_type": SourceType.FINANCIAL_DATA_PROVIDER.value,
+            }
+        )
+
+    if rows:
+        result["synced"] = await store_fundamental_snapshots(rows)
+    return result
+
+
 async def refresh_market_data(
     settings: Settings | None = None, include_amfi: bool = True
 ) -> dict[str, Any]:
     settings = settings or get_settings()
-    if not settings.indstocks_configured:
-        raise IndstocksError(
-            "INDstocks is not configured. Set INDSTOCKS_ACCESS_TOKEN, "
-            "or INDSTOCKS_CLIENT_ID, INDSTOCKS_MPIN, and INDSTOCKS_TOTP_SECRET."
-        )
     summary: dict[str, Any] = {
         "instruments": 0,
         "quotes": 0,
         "daily_bars": 0,
         "holdings": 0,
         "nav_records": 0,
+        "fundamentals_synced": 0,
+        "mutual_fund_schemes_synced": 0,
         "warnings": [],
     }
+
+    try:
+        fundamentals_result = await sync_fundamentals(settings)
+        summary["fundamentals_synced"] = fundamentals_result.get("synced", 0)
+        summary["warnings"].extend(fundamentals_result.get("warnings", []))
+    except Exception as exc:
+        summary["warnings"].append(f"Fundamentals auto-ingest failed: {exc}")
+
+    try:
+        scheme_result = await sync_mutual_fund_schemes(settings)
+        summary["mutual_fund_schemes_synced"] = scheme_result.get("synced", 0)
+        summary["warnings"].extend(scheme_result.get("warnings", []))
+    except Exception as exc:
+        summary["warnings"].append(f"Mutual fund scheme master sync failed: {exc}")
+
+    if not settings.indstocks_configured:
+        raise IndstocksError(
+            "INDstocks is not configured. Set INDSTOCKS_ACCESS_TOKEN, "
+            "or INDSTOCKS_CLIENT_ID, INDSTOCKS_MPIN, and INDSTOCKS_TOTP_SECRET."
+        )
     watchlist = set(settings.indstocks_watchlist)
     async with IndstocksClient(settings) as client:
         instruments = await client.get_equity_instruments()

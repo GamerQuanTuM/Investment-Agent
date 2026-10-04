@@ -90,6 +90,41 @@ curl -X POST "http://localhost:8000/research/run" \
      -d '{"user_id": "usr_001", "monthly_budget": 25000.0}'
 ```
 
+### SIP Calculator: Real Mutual Funds and ETF Mixes
+
+The full, current route list is always in Swagger at `/docs`; the mutual-fund-backed SIP
+tools live under `/funds/*` (`src/investment_agent/api/routes/funds.py`), separate from
+the listed-ETF-mix calculator at `POST /research/sip` (`src/investment_agent/research/sip.py`).
+
+```bash
+# Search the AMFI scheme master (falls back to mfapi.in if it hasn't been synced yet)
+curl "http://localhost:8000/funds/search?q=sbi+bluechip"
+
+# One scheme's facts, trailing returns, and risk metrics
+curl "http://localhost:8000/funds/119598"
+
+# Backtest a real historical SIP against that scheme's actual NAV history
+curl -X POST "http://localhost:8000/funds/sip/backtest" \
+     -H "Content-Type: application/json" \
+     -d '{"scheme_code": "119598", "monthly": 5000}'
+
+# Forward projection (an assumption, not a forecast — always labelled as such)
+curl -X POST "http://localhost:8000/funds/sip/project" \
+     -H "Content-Type: application/json" \
+     -d '{"monthly": 5000, "years": 10, "annual_return_pct": 12}'
+
+# Deterministic, risk-profile-weighted mix across multiple funds
+curl -X POST "http://localhost:8000/funds/sip/suggest" \
+     -H "Content-Type: application/json" \
+     -d '{"monthly": 10000, "horizon_years": 10, "risk_profile": "moderate"}'
+```
+
+The AMFI-backed `mutual_fund_schemes` table (used by `GET /funds/search` and
+`POST /funds/sip/suggest`'s fund-picking step) is populated by `POST /market/refresh`;
+until that's run at least once, both routes degrade gracefully (search falls back to
+mfapi.in's own unclassified search; suggest returns a `DATA_UNAVAILABLE` sleeve per
+category) rather than erroring. See `docs/data-sources.md` §4 for the data-source detail.
+
 ---
 
 ## 6. Running Tests & Code Quality

@@ -176,6 +176,213 @@ export interface FundamentalSnapshot {
   eps?: number | null;
 }
 
+export interface Filing {
+  symbol: string | null;
+  subject: string;
+  category: string;
+  announced_at: string | null;
+  attachment_url: string | null;
+  source_name: string;
+  source_url: string;
+}
+
+export interface StockFilings {
+  symbol: string;
+  status: "OK" | "DATA_UNAVAILABLE";
+  filings: Filing[];
+}
+
+export interface ShareholdingQuarter {
+  period_end: string | null;
+  promoter_pct: number | null;
+  promoter_pledge_pct: number | null;
+  fii_pct: number | null;
+  dii_pct: number | null;
+  public_pct: number | null;
+}
+
+export interface StockShareholding {
+  symbol: string;
+  status: "OK" | "DATA_UNAVAILABLE";
+  quarters: ShareholdingQuarter[];
+}
+
+export interface ConcentrationReport {
+  sector_exposure_pct: Record<string, number>;
+  biggest_sector: string | null;
+  biggest_sector_pct: number | null;
+  biggest_holding_symbol: string | null;
+  biggest_holding_pct: number | null;
+  diversification_score: number | null;
+  concentration_flags: string[];
+}
+
+export interface PortfolioAlert {
+  symbol: string | null;
+  severity: "INFO" | "WARNING";
+  kind: "DRAWDOWN" | "CONCENTRATION" | "SECTOR_CONCENTRATION";
+  message: string;
+}
+
+export interface CompareResult {
+  symbols: string[];
+  items: StockScore[];
+}
+
+export interface MacroFieldUsdInr {
+  status: "OK" | "DATA_UNAVAILABLE";
+  value?: number;
+  data_date?: string;
+  source_name?: string;
+  source_url?: string;
+}
+
+export interface MacroFieldCpi {
+  status: "OK" | "DATA_UNAVAILABLE";
+  value_pct?: number;
+  data_date?: string;
+  source_name?: string;
+  source_url?: string;
+}
+
+export interface MacroSnapshot {
+  usd_inr: MacroFieldUsdInr;
+  cpi_inflation_yoy: MacroFieldCpi;
+}
+
+export interface NewsArticle {
+  title: string;
+  link: string | null;
+  source_name: string;
+  published_at: string | null;
+}
+
+export interface NewsSentiment {
+  label: "POSITIVE" | "NEUTRAL" | "NEGATIVE" | "DATA_UNAVAILABLE";
+  score: number | null;
+  positive_count: number;
+  negative_count: number;
+  total_articles: number;
+}
+
+export interface StockNews {
+  symbol: string;
+  status: "OK" | "DATA_UNAVAILABLE";
+  articles: NewsArticle[];
+  sentiment: NewsSentiment;
+}
+
+export interface ScoreInput {
+  label: string;
+  value: number | null;
+  unit: string;
+  benchmark: number | null;
+  benchmark_label: string | null;
+}
+
+export interface ScoreBlock {
+  score: number | null;
+  inputs: ScoreInput[];
+}
+
+export interface StockScore {
+  symbol: string;
+  name?: string;
+  status: "OK" | "DATA_UNAVAILABLE";
+  message?: string;
+  quality?: ScoreBlock;
+  valuation?: ScoreBlock;
+  momentum?: ScoreBlock;
+  risk?: ScoreBlock;
+  overall?: number | null;
+  explanation?: string;
+  valuation_note?: string;
+  data_as_of?: string | null;
+}
+
+export interface FundSummary {
+  scheme_code: string;
+  name: string;
+  fund_house: string | null;
+  category: string | null;
+  sebi_group: string | null;
+  plan: string | null;
+  option: string | null;
+  latest_nav: number | null;
+  nav_date: string | null;
+}
+
+export interface FundSearchResult {
+  query: string;
+  source: "database" | "mfapi.in";
+  items: (FundSummary | { scheme_code: string; scheme_name: string })[];
+}
+
+export interface FundDetail {
+  scheme_code: string;
+  status: "OK" | "DATA_UNAVAILABLE";
+  message?: string;
+  facts: FundSummary | null;
+  trailing_returns_pct?: { "1y": number | null; "3y": number | null; "5y": number | null; "10y": number | null };
+  risk?: { max_drawdown_pct: number; annualized_volatility_pct: number | null };
+  rolling_3y_return_pct?: { best_pct: number | null; worst_pct: number | null };
+  data_as_of?: string | null;
+  source_name?: string;
+  source_url?: string;
+}
+
+export interface FundSipBacktestResult {
+  scheme_code: string;
+  scheme_name: string | null;
+  invested: number | null;
+  units: number | null;
+  current_value: number | null;
+  xirr_pct: number | null;
+  start_date: string | null;
+  end_date: string | null;
+}
+
+export interface FundSipProjectResult {
+  assumption_note: string;
+  invested: number;
+  nominal_corpus: number;
+  inflation_adjusted_corpus: number;
+}
+
+export interface SuggestMixFund {
+  scheme_code: string;
+  scheme_name: string;
+  trailing_return_pct_used: number;
+  return_window: string;
+}
+
+export interface SuggestMixSleeve {
+  category: string;
+  category_label?: string;
+  weight_pct: number;
+  monthly_inr: number;
+  status: "OK" | "DATA_UNAVAILABLE";
+  scheme_code: string | null;
+  scheme_name: string | null;
+  trailing_return_pct_used?: number | null;
+  return_window?: string | null;
+  has_full_5y_history?: boolean;
+  projected_corpus?: number | null;
+  funds?: SuggestMixFund[];
+}
+
+export interface SuggestMixResult {
+  mode: "suggest";
+  risk_profile: string;
+  horizon_years: number;
+  monthly_amount: number;
+  return_span?: string;
+  return_span_label?: string;
+  sleeves: SuggestMixSleeve[];
+  note: string;
+  explanation: string;
+}
+
 export interface ResearchRunResult {
   status: string;
   decision: "OPPORTUNITY" | "NO_ACTION";

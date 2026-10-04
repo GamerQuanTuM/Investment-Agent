@@ -118,7 +118,7 @@ class Settings(BaseSettings):
     QUOTE_CACHE_TTL_SECONDS: int = 120
 
     # Mutual fund NAVs (official AMFI file, no API key)
-    AMFI_NAV_URL: str = "https://www.amfiindia.com/spages/NAVAll.txt"
+    AMFI_NAV_URL: str = "https://portal.amfiindia.com/spages/NAVAll.txt"
     AMFI_SCHEME_CODES: str = ""
 
     @property

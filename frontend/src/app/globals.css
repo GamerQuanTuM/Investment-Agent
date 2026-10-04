@@ -105,6 +105,16 @@ textarea:focus-visible {
   scrollbar-width: none;
 }
 
+@media (min-width: 1024px) {
+  .sip-workspace {
+    height: calc(100dvh - 11rem);
+    max-height: calc(100dvh - 11rem);
+    min-height: 0;
+    overflow: hidden;
+    grid-template-rows: minmax(0, 1fr);
+  }
+}
+
 @layer components {
   /* Shared card chrome */
   .card {

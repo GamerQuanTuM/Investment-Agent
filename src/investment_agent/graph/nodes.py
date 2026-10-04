@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -7,6 +8,8 @@ from investment_agent.config.settings import get_settings
 from investment_agent.db.models.prediction import PredictionLog
 from investment_agent.db.session import async_session_factory
 from investment_agent.graph.state import InvestmentGraphState
+from investment_agent.market.news import get_news
+from investment_agent.market.nse import get_filings
 from investment_agent.market.universe import (
     load_candidates_from_db,
     load_portfolio_from_broker,
@@ -14,6 +17,8 @@ from investment_agent.market.universe import (
 )
 from investment_agent.portfolio.calculations import calculate_sector_exposure
 from investment_agent.research.evidence import SourceType
+from investment_agent.research.outcome_scoring import EVALUATION_HORIZON_DAYS
+from investment_agent.research.sentiment import aggregate_sentiment
 
 logger = logging.getLogger(__name__)
 
@@ -264,17 +269,98 @@ async def fundamental_analysis_node(state: InvestmentGraphState) -> dict[str, An
 # ---------------------------------------------------------------------------
 # Node 7: News & Announcements Analysis
 # ---------------------------------------------------------------------------
+_FILING_RISK_KEYWORDS = (
+    "resignation",
+    "resign",
+    "default",
+    "winding up",
+    "insolvency",
+    "investigation",
+    "raid",
+    "fraud",
+    "suspension",
+    "delisting",
+    "strike",
+)
+
+
 async def news_analysis_node(state: InvestmentGraphState) -> dict[str, Any]:
-    """Pass through sourced announcements. Missing news stays DATA_UNAVAILABLE."""
+    """Fetch live NSE corporate announcements (F1) and real news headlines (F4) per
+    candidate, concurrently.
+
+    `filings_risk` is a keyword heuristic over real exchange filings. `sentiment_label`
+    (F4) is a separate, broader lexicon score over real news headlines (`market/news.py`
+    + `research/sentiment.py`) — still deterministic Python, never an LLM/ML classifier,
+    per this project's "Python computes every number" rule. The two are combined into a
+    single `news_risk` that `risk_agent_node` reads: ELEVATED if either signal is
+    elevated/negative, DATA_UNAVAILABLE only if *both* signals are unavailable, else
+    NORMAL. A blocked/unavailable source degrades its own half to DATA_UNAVAILABLE
+    instead of failing the run (see market/nse.py, market/news.py).
+    """
     candidates = state.get("candidates", [])
+    symbols = [str(candidate.get("symbol", "UNKNOWN")) for candidate in candidates]
+    news_query_by_symbol = {
+        str(candidate.get("symbol", "UNKNOWN")): str(candidate.get("name") or candidate.get("symbol", "UNKNOWN"))
+        for candidate in candidates
+    }
     news_summary: dict[str, Any] = {}
 
-    for candidate in candidates:
-        symbol = str(candidate.get("symbol", "UNKNOWN"))
-        announcements = candidate.get("recent_announcements")
+    async def _filings_or_empty(symbol: str) -> list[dict[str, Any]]:
+        # Belt-and-suspenders on top of nse.py's own cooldown: a single candidate's NSE
+        # call must never be allowed to stall this node past a few seconds, regardless of
+        # how many candidates are in the universe.
+        try:
+            return await asyncio.wait_for(get_filings(symbol), timeout=10.0)
+        except TimeoutError:
+            return []
+
+    async def _news_or_empty(query: str) -> list[dict[str, Any]]:
+        try:
+            return await asyncio.wait_for(get_news(f"{query} stock NSE"), timeout=10.0)
+        except TimeoutError:
+            return []
+
+    if symbols:
+        filings_results, news_results = await asyncio.gather(
+            asyncio.gather(*(_filings_or_empty(symbol) for symbol in symbols)),
+            asyncio.gather(*(_news_or_empty(news_query_by_symbol[symbol]) for symbol in symbols)),
+        )
+        filings_by_symbol = dict(zip(symbols, filings_results, strict=True))
+        news_by_symbol = dict(zip(symbols, news_results, strict=True))
+    else:
+        filings_by_symbol = {}
+        news_by_symbol = {}
+
+    for symbol in symbols:
+        filings = filings_by_symbol.get(symbol) or []
+        flagged = [
+            item["subject"]
+            for item in filings
+            if any(keyword in (item.get("subject") or "").lower() for keyword in _FILING_RISK_KEYWORDS)
+        ]
+        filings_risk = "DATA_UNAVAILABLE" if not filings else ("ELEVATED" if flagged else "NORMAL")
+
+        articles = news_by_symbol.get(symbol) or []
+        sentiment = aggregate_sentiment(articles)
+
+        if filings_risk == "DATA_UNAVAILABLE" and sentiment["label"] == "DATA_UNAVAILABLE":
+            news_risk = "DATA_UNAVAILABLE"
+        elif filings_risk == "ELEVATED" or sentiment["label"] == "NEGATIVE":
+            news_risk = "ELEVATED"
+        else:
+            news_risk = "NORMAL"
+
         news_summary[symbol] = {
-            "recent_announcements": announcements or "DATA_UNAVAILABLE",
-            "source_url": candidate.get("announcement_source_url"),
+            "recent_announcements": [item["subject"] for item in filings[:5]] if filings else "DATA_UNAVAILABLE",
+            "filings_risk": filings_risk,
+            "flagged_filings": flagged,
+            "source_url": filings[0].get("source_url") if filings else None,
+            "articles": articles[:5],
+            "sentiment_label": sentiment["label"],
+            "sentiment_score": sentiment["score"],
+            "sentiment_positive_count": sentiment["positive_count"],
+            "sentiment_negative_count": sentiment["negative_count"],
+            "news_risk": news_risk,
         }
 
     return {"market_context": {**state.get("market_context", {}), "news_summary": news_summary}}
@@ -313,9 +399,12 @@ async def valuation_analysis_node(state: InvestmentGraphState) -> dict[str, Any]
 # Node 9: Risk Agent
 # ---------------------------------------------------------------------------
 async def risk_agent_node(state: InvestmentGraphState) -> dict[str, Any]:
-    """State risks that follow from the stored ratios."""
+    """State risks that follow from the stored ratios, plus the combined `news_risk`
+    (filings keyword screen + F4 news sentiment) from news_analysis_node instead of a
+    hardcoded DATA_UNAVAILABLE."""
     candidates = state.get("candidates", [])
     risks: dict[str, Any] = {}
+    news_summary = state.get("market_context", {}).get("news_summary", {})
 
     for candidate in candidates:
         symbol = str(candidate.get("symbol", "UNKNOWN"))
@@ -326,7 +415,7 @@ async def risk_agent_node(state: InvestmentGraphState) -> dict[str, Any]:
             "debt_to_equity": debt,
             "financial_risk": "ELEVATED" if debt > 1 else "LOW",
             "governance_flag": "PLEDGE_PRESENT" if pledge > 0 else "NO_PLEDGE_IN_SNAPSHOT",
-            "news_risk": "DATA_UNAVAILABLE",
+            "news_risk": news_summary.get(symbol, {}).get("news_risk", "DATA_UNAVAILABLE"),
         }
 
     return {"risk_analysis": risks}
@@ -550,6 +639,28 @@ async def investment_report_node(state: InvestmentGraphState) -> dict[str, Any]:
     symbol = primary.get("symbol", "N/A")
     fundamentals = state.get("fundamental_analysis", {}).get(symbol, {})
     risks = state.get("risk_analysis", {}).get(symbol, {})
+    news = state.get("market_context", {}).get("news_summary", {}).get(symbol, {})
+    filings_risk = news.get("filings_risk", "DATA_UNAVAILABLE")
+    if filings_risk == "DATA_UNAVAILABLE":
+        uncertainty = ["Corporate announcements: DATA_UNAVAILABLE — NSE filings could not be fetched for this run."]
+    elif filings_risk == "ELEVATED":
+        uncertainty = [
+            "Corporate announcements flagged at least one recent filing worth reading in full: "
+            + "; ".join(news.get("flagged_filings") or []) or "see /market/stocks/{symbol}/filings."
+        ]
+    else:
+        uncertainty = ["Corporate announcements: no recent filing matched the risk-keyword screen."]
+
+    sentiment_label = news.get("sentiment_label", "DATA_UNAVAILABLE")
+    if sentiment_label == "DATA_UNAVAILABLE":
+        uncertainty.append("Recent news sentiment: DATA_UNAVAILABLE — no news headlines could be fetched for this run.")
+    else:
+        uncertainty.append(
+            f"Recent news sentiment: {sentiment_label} (a keyword-lexicon score over "
+            f"{news.get('sentiment_positive_count', 0)} positive vs. "
+            f"{news.get('sentiment_negative_count', 0)} negative headline matches out of "
+            f"{len(news.get('articles') or [])} articles — not an AI/NLP sentiment model)."
+        )
 
     report = {
         "title": f"Investment Research Brief: {primary.get('name', symbol)}",
@@ -571,9 +682,7 @@ async def investment_report_node(state: InvestmentGraphState) -> dict[str, Any]:
             "The holding horizon is the horizon on the user profile.",
             "Ratios in the snapshot stay representative until the next filing.",
         ],
-        "UNCERTAINTY": [
-            "Corporate announcements: DATA_UNAVAILABLE until an exchange filing is ingested.",
-        ],
+        "UNCERTAINTY": uncertainty,
         "RISK": [
             f"Promoter pledge {primary.get('promoter_pledge_pct')}%",
             f"Debt to equity {primary.get('debt_to_equity')}",
@@ -591,11 +700,23 @@ async def investment_report_node(state: InvestmentGraphState) -> dict[str, Any]:
 # Node 16: Recommendation Logger
 # ---------------------------------------------------------------------------
 async def recommendation_logger_node(state: InvestmentGraphState) -> dict[str, Any]:
-    """Persist the decision when Postgres is reachable. The response still returns the log entry."""
+    """Persist the decision when Postgres is reachable. The response still returns the
+    log entry.
+
+    Stores `entry_price` (the candidate's price at prediction time) and
+    `evaluation_due_date` (now + `EVALUATION_HORIZON_DAYS`) inside `expected_conditions` —
+    previously neither was recorded, which meant Gap 7's outcome scoring (see
+    `research/outcome_scoring.py`) would have had no reference price to compare against
+    later and no way to know when a prediction was due for review.
+    """
     rec = state.get("recommendation", {})
     settings = get_settings()
     pred_id = f"pred_{uuid.uuid4().hex[:12]}"
     asset_id = rec.get("asset_id") or "N/A"
+    candidates = state.get("candidates", [])
+    primary = next((c for c in candidates if c.get("symbol") == asset_id), None)
+    entry_price = (primary or {}).get("current_price")
+    due_date = datetime.now(UTC) + timedelta(days=EVALUATION_HORIZON_DAYS)
     log_entry = {
         "prediction_id": pred_id,
         "asset_id": asset_id,
@@ -615,7 +736,11 @@ async def recommendation_logger_node(state: InvestmentGraphState) -> dict[str, A
                     user_id=state.get("user_id"),
                     thesis=str(rec.get("reason") or rec.get("decision") or "NO_ACTION"),
                     assumptions=[],
-                    expected_conditions={"action_items": rec.get("action_items") or []},
+                    expected_conditions={
+                        "action_items": rec.get("action_items") or [],
+                        "entry_price": entry_price,
+                        "decision": rec.get("decision"),
+                    },
                     evidence_ids=[],
                     confidence=float(state.get("confidence") or 0.0),
                     status=str(rec.get("status") or "NO_ACTION"),
@@ -623,6 +748,7 @@ async def recommendation_logger_node(state: InvestmentGraphState) -> dict[str, A
                     model_name=settings.PRIMARY_LLM_MODEL,
                     prompt_version="v1.1.0",
                     strategy_version="1.1.0",
+                    evaluation_due_date=due_date,
                 )
             )
             await session.commit()

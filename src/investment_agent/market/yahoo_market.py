@@ -7,11 +7,14 @@ or a movers feed. Quotes use its batch endpoint, and charts use Yahoo's public c
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
+
+from investment_agent.market.cache import CacheTTL, cache_get, cache_set
 
 YAHOO = "https://query1.finance.yahoo.com"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -177,6 +180,11 @@ async def screen_movers(offset: int, limit: int, exchange: str = "NSE") -> tuple
 
 async def quote_symbol(symbol: str, exchange: str = "NSE") -> dict[str, Any] | None:
     ticker = ticker_for(symbol, exchange)
+    cache_key = f"yahoo:quote:{ticker}"
+    cached = await cache_get(cache_key)
+    if cached is not None:
+        return json.loads(cached)
+
     async with await _client() as http:
         response = await _crumbed_request(
             http,
@@ -191,6 +199,7 @@ async def quote_symbol(symbol: str, exchange: str = "NSE") -> dict[str, Any] | N
     if row is None:
         return None
     row["as_of"] = datetime.now(UTC).isoformat()
+    await cache_set(cache_key, json.dumps(row), CacheTTL.PRICE)
     return row
 
 
@@ -251,6 +260,11 @@ def _pct(value: Any) -> float | None:
 async def company_fundamentals(symbol: str, exchange: str = "NSE") -> dict[str, Any]:
     """ROE, debt, margins, and growth from Yahoo's free company profile."""
     ticker = ticker_for(symbol, exchange)
+    cache_key = f"yahoo:fundamentals:{ticker}"
+    cached = await cache_get(cache_key)
+    if cached is not None:
+        return json.loads(cached)
+
     modules = "financialData,defaultKeyStatistics,assetProfile"
     async with await _client() as http:
         response = await _crumbed_request(
@@ -270,7 +284,7 @@ async def company_fundamentals(symbol: str, exchange: str = "NSE") -> dict[str, 
     stats = profile.get("defaultKeyStatistics") or {}
     about = profile.get("assetProfile") or {}
     debt_pct = _raw(financials.get("debtToEquity"))
-    return {
+    fundamentals = {
         "sector": about.get("sector"),
         "industry": about.get("industry"),
         "roe_pct": _pct(financials.get("returnOnEquity")),
@@ -284,6 +298,79 @@ async def company_fundamentals(symbol: str, exchange: str = "NSE") -> dict[str, 
         "book_value": _raw(stats.get("bookValue")),
         "source": "Yahoo Finance company profile",
     }
+    await cache_set(cache_key, json.dumps(fundamentals), CacheTTL.FUNDAMENTALS)
+    return fundamentals
+
+
+def _statement_rows(entries: list[dict[str, Any]], fields: dict[str, str]) -> list[dict[str, Any]]:
+    """Normalize a Yahoo quoteSummary statement list (each value wrapped as {"raw": ...})
+    into plain dicts, oldest statement last (Yahoo already orders most-recent-first)."""
+    rows = []
+    for entry in entries:
+        end_date = entry.get("endDate") or {}
+        row: dict[str, Any] = {"end_date": end_date.get("fmt")}
+        for out_key, yahoo_key in fields.items():
+            row[out_key] = _raw(entry.get(yahoo_key))
+        rows.append(row)
+    return rows
+
+
+async def financial_statement_history(symbol: str, exchange: str = "NSE") -> dict[str, Any]:
+    """Annual income statement, balance sheet, and cash flow history for ROCE/FCF/CAGR math.
+
+    Gap 2: Python (portfolio/calculations.py) computes the ratios from this — the LLM never
+    sees raw statements. Degrades to empty lists (never raises) when Yahoo has nothing.
+    """
+    ticker = ticker_for(symbol, exchange)
+    cache_key = f"yahoo:statements:{ticker}"
+    cached = await cache_get(cache_key)
+    if cached is not None:
+        return json.loads(cached)
+
+    modules = "incomeStatementHistory,balanceSheetHistory,cashflowStatementHistory"
+    async with await _client() as http:
+        response = await _crumbed_request(
+            http,
+            lambda crumb: http.get(
+                f"{YAHOO}/v10/finance/quoteSummary/{ticker}",
+                params={"modules": modules, "crumb": crumb},
+            ),
+        )
+    if response.status_code >= 400:
+        raise MarketDataError(f"Financial statements failed ({response.status_code})")
+    result = ((response.json().get("quoteSummary") or {}).get("result")) or []
+    if not result:
+        return {"income_statements": [], "balance_sheets": [], "cash_flows": []}
+    profile = result[0]
+    income_entries = (profile.get("incomeStatementHistory") or {}).get("incomeStatementHistory") or []
+    balance_entries = (profile.get("balanceSheetHistory") or {}).get("balanceSheetStatements") or []
+    cashflow_entries = (profile.get("cashflowStatementHistory") or {}).get("cashflowStatements") or []
+
+    statements = {
+        "income_statements": _statement_rows(
+            income_entries,
+            {
+                "total_revenue": "totalRevenue",
+                "ebit": "ebit",
+                "net_income": "netIncome",
+                "interest_expense": "interestExpense",
+            },
+        ),
+        "balance_sheets": _statement_rows(
+            balance_entries,
+            {
+                "total_assets": "totalAssets",
+                "total_current_liabilities": "totalCurrentLiabilities",
+                "total_equity": "totalStockholderEquity",
+            },
+        ),
+        "cash_flows": _statement_rows(
+            cashflow_entries,
+            {"operating_cash_flow": "totalCashFromOperatingActivities", "capex": "capitalExpenditures"},
+        ),
+    }
+    await cache_set(cache_key, json.dumps(statements), CacheTTL.FUNDAMENTALS)
+    return statements
 
 
 async def index_quotes() -> list[dict[str, Any]]:

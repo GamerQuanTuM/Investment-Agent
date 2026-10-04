@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -11,7 +12,7 @@ from investment_agent.db.session import async_session_factory
 from investment_agent.graph.state import InvestmentGraphState
 from investment_agent.research.chat import chat_turn
 from investment_agent.research.guidance import guide_symbol
-from investment_agent.research.sip import build_sip
+from investment_agent.research.sip import build_etf_sip
 
 router = APIRouter(prefix="/research", tags=["Research"])
 
@@ -61,7 +62,9 @@ async def research_chat(request: ChatRequest) -> dict[str, Any]:
 
 @router.post("/sip")
 async def research_sip(request: SipRequest) -> dict[str, Any]:
-    return await build_sip(request.monthly_amount, request.horizon_years, request.style)
+    """ETF-mix SIP (unchanged route/shape). Real mutual-fund SIP tools live under
+    `/funds/sip/*` (see `api/routes/funds.py`)."""
+    return await build_etf_sip(request.monthly_amount, request.horizon_years, request.style)
 
 
 class RunResearchRequest(BaseModel):
@@ -116,6 +119,84 @@ async def run_research_pipeline(
         warnings=final_state.get("warnings", []),
         errors=final_state.get("errors", []),
     )
+
+
+@router.get("/score/{symbol}")
+async def research_score(symbol: str, exchange: str = "NSE") -> dict[str, Any]:
+    """F2 deterministic Quality/Valuation/Momentum/Risk score (0-100 each + overall)."""
+    from investment_agent.research.stock_score import build_stock_score
+
+    venue = "BSE" if exchange.upper() == "BSE" else "NSE"
+    try:
+        return await build_stock_score(symbol.strip(), venue)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.get("/compare")
+async def research_compare(symbols: str, exchange: str = "NSE") -> dict[str, Any]:
+    """F9: side-by-side F2 scores for multiple symbols. `symbols` is comma-separated
+    (e.g. `?symbols=TCS,INFY,WIPRO`). Registered before `/{asset_id}` below so this
+    literal path isn't swallowed by that catch-all."""
+    from investment_agent.research.stock_score import build_stock_score
+
+    venue = "BSE" if exchange.upper() == "BSE" else "NSE"
+    requested = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    if not requested:
+        raise HTTPException(status_code=400, detail="Provide at least one symbol, e.g. ?symbols=TCS,INFY")
+    if len(requested) > 5:
+        raise HTTPException(status_code=400, detail="Compare at most 5 symbols at a time.")
+
+    async def _score_or_error(symbol: str) -> dict[str, Any]:
+        try:
+            return await asyncio.wait_for(build_stock_score(symbol, venue), timeout=20.0)
+        except Exception as exc:
+            return {"symbol": symbol, "status": "DATA_UNAVAILABLE", "message": str(exc)}
+
+    results = await asyncio.gather(*(_score_or_error(symbol) for symbol in requested))
+    return {"symbols": requested, "items": results}
+
+
+@router.get("/predictions")
+async def list_predictions(limit: int = 50) -> dict[str, Any]:
+    """List logged predictions (Gap 7), newest first — mainly for verifying outcome
+    scoring is actually running, not a polished UI feature on its own."""
+    from investment_agent.db.models.prediction import PredictionLog
+
+    async with async_session_factory() as session:
+        rows = (
+            await session.scalars(
+                select(PredictionLog).order_by(PredictionLog.created_at.desc()).limit(min(limit, 200))
+            )
+        ).all()
+    return {
+        "items": [
+            {
+                "prediction_id": row.prediction_id,
+                "asset_id": row.asset_id,
+                "status": row.status,
+                "confidence": row.confidence,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "evaluation_due_date": row.evaluation_due_date.isoformat() if row.evaluation_due_date else None,
+                "outcome_status": row.outcome_status,
+                "evaluation_notes": row.evaluation_notes,
+                "entry_price": (row.expected_conditions or {}).get("entry_price"),
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.post("/predictions/evaluate")
+async def evaluate_predictions() -> dict[str, Any]:
+    """Trigger Gap 7's outcome scoring: classify every prediction past its
+    `evaluation_due_date` with no `outcome_status` yet, against its current price."""
+    from investment_agent.research.outcome_scoring import evaluate_due_predictions
+
+    try:
+        return await evaluate_due_predictions()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Could not evaluate predictions: {exc}") from exc
 
 
 @router.get("/{asset_id}")

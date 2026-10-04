@@ -17,6 +17,10 @@ class SourceType(StrEnum):
     REPUTABLE_NEWS = "Reputable News"
     FINANCIAL_DATA_PROVIDER = "Financial Data Provider"
     INDSTOCKS = "INDstocks"
+    MFAPI = "MFAPI"
+    RBI = "RBI"
+    NEWS_RSS = "News RSS"
+    FRED = "FRED"
     OTHER = "Other"
 
 

@@ -3,11 +3,13 @@
 import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
 import { useState, FormEvent } from "react";
-import { LayoutDashboard, CandlestickChart, Sparkles, PiggyBank, FlaskConical, Search, Bell } from "lucide-react";
+import { LayoutDashboard, CandlestickChart, Sparkles, PiggyBank, FlaskConical, Search, Bell, Wallet, Scale } from "lucide-react";
 
 const LINKS = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard, color: "var(--section-portfolio)", soft: "var(--section-portfolio-soft)" },
   { href: "/stocks", label: "Stocks", icon: CandlestickChart, color: "var(--section-stocks)", soft: "var(--section-stocks-soft)" },
+  { href: "/portfolio", label: "Portfolio", icon: Wallet, color: "var(--section-portfolio)", soft: "var(--section-portfolio-soft)" },
+  { href: "/compare", label: "Compare", icon: Scale, color: "var(--section-research)", soft: "var(--section-research-soft)" },
   { href: "/research", label: "Research", icon: FlaskConical, color: "var(--section-research)", soft: "var(--section-research-soft)" },
   { href: "/chat", label: "Ask AI", icon: Sparkles, color: "var(--section-chat)", soft: "var(--section-chat-soft)" },
   { href: "/sip", label: "SIP", icon: PiggyBank, color: "var(--section-sip)", soft: "var(--section-sip-soft)" },

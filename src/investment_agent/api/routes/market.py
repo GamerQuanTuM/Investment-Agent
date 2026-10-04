@@ -95,6 +95,63 @@ async def stock_history(symbol: str, range: str = "1y", exchange: str = "NSE") -
     return history
 
 
+@router.get("/stocks/{symbol}/filings")
+async def stock_filings(symbol: str) -> dict[str, Any]:
+    """Latest corporate announcements from NSE. Empty list, not an error, when unavailable."""
+    from investment_agent.market.nse import get_filings
+
+    filings = await get_filings(symbol)
+    return {
+        "symbol": symbol.upper(),
+        "status": "OK" if filings else "DATA_UNAVAILABLE",
+        "filings": filings,
+    }
+
+
+@router.get("/stocks/{symbol}/shareholding")
+async def stock_shareholding(symbol: str) -> dict[str, Any]:
+    """Quarter-wise promoter/FII/DII/public holding and promoter pledge from NSE."""
+    from investment_agent.market.nse import get_shareholding
+
+    quarters = await get_shareholding(symbol)
+    return {
+        "symbol": symbol.upper(),
+        "status": "OK" if quarters else "DATA_UNAVAILABLE",
+        "quarters": quarters,
+    }
+
+
+@router.get("/stocks/{symbol}/news")
+async def stock_news(symbol: str, name: str | None = None) -> dict[str, Any]:
+    """Recent news headlines (Google News RSS) plus a deterministic lexicon-based
+    sentiment score (F4) — not an LLM/ML sentiment model. `name` (the company name) gives
+    a far more relevant search than the bare ticker symbol; falls back to the symbol
+    alone when omitted."""
+    from investment_agent.market.news import get_news
+    from investment_agent.research.sentiment import aggregate_sentiment
+
+    query = f"{name or symbol} stock NSE"
+    articles = await get_news(query)
+    sentiment = aggregate_sentiment(articles)
+    return {
+        "symbol": symbol.upper(),
+        "status": "OK" if articles else "DATA_UNAVAILABLE",
+        "articles": articles,
+        "sentiment": sentiment,
+    }
+
+
+@router.get("/macro")
+async def macro_snapshot() -> dict[str, Any]:
+    """USD/INR spot rate and YoY CPI inflation (F3), from FRED's free CSV export. Each
+    field degrades to its own `DATA_UNAVAILABLE` rather than failing the whole response —
+    see `market/macro.py` for why RBI's own discount-rate series was deliberately left
+    out (too stale to show as current)."""
+    from investment_agent.market.macro import get_macro_snapshot
+
+    return await get_macro_snapshot()
+
+
 @router.get("/portfolio")
 async def portfolio() -> dict[str, Any]:
     """Live Demat holdings and cash. Empty when the broker session is not configured."""
@@ -171,6 +228,26 @@ async def portfolio() -> dict[str, Any]:
         "day_change_pct": round((market - invested) / invested * 100.0, 2) if invested else None,
         "holdings": holdings,
     }
+
+
+@router.get("/portfolio/concentration")
+async def portfolio_concentration() -> dict[str, Any]:
+    """Sector exposure and single-holding concentration (Gap 8), computed over the same
+    live holdings `GET /market/portfolio` returns."""
+    from investment_agent.research.portfolio_insights import build_concentration_report
+
+    book = await portfolio()
+    return build_concentration_report(book["holdings"])
+
+
+@router.get("/portfolio/alerts")
+async def portfolio_alerts() -> dict[str, Any]:
+    """Deterministic, threshold-based portfolio alerts (F8) — drawdown and concentration
+    flags only, no day-trading signal, no LLM call."""
+    from investment_agent.research.alerts import generate_portfolio_alerts
+
+    book = await portfolio()
+    return {"alerts": generate_portfolio_alerts(book["holdings"])}
 
 
 @router.get("/status")
