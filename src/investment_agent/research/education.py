@@ -16,6 +16,7 @@ import re
 from typing import Any
 
 from investment_agent.llm.factory import extract_text, get_llm
+from investment_agent.research import chat_ai
 from investment_agent.research.evidence import Evidence, SourceType
 from investment_agent.research.formatting import inr
 from investment_agent.research.glossary import (
@@ -31,7 +32,7 @@ from investment_agent.research.glossary import (
 
 logger = logging.getLogger(__name__)
 
-LLM_TIMEOUT_SECONDS = 12.0  # a stalled model must not stall the chat
+LLM_TIMEOUT_SECONDS = 30.0  # a stalled model must not stall the chat
 
 EDUCATION_SYSTEM_PROMPT = (
     "You explain one investing concept to someone who has never invested, in 3 to 5 short "
@@ -132,7 +133,16 @@ async def explain(message: str, concept: str | None, amount_inr: float | None) -
     """Answer an education question. Never needs amount, horizon or any market data."""
     entry = find_term(message) or (entry_by_term(concept) if concept else None)
     if entry is not None:
-        return glossary_answer(entry, amount_inr)
+        answer = glossary_answer(entry, amount_inr)
+        written = await chat_ai.write(
+            chat_ai.TASKS["explain"],
+            message,
+            reference=f"{entry.term}: {entry.definition}\nExample: {entry.example}",
+        )
+        answer["answered_by"] = "ai" if written else "reviewed"
+        if written:
+            answer["text"] = written
+        return answer
     text = await _llm_explain(message)
     if text is not None:
         return {
@@ -177,19 +187,7 @@ def _comparison_sources(comparison: Comparison) -> list[dict[str, Any]]:
 
 
 async def _llm_compare(message: str) -> str | None:
-    try:
-        model = get_llm("cheap")
-        reply = await asyncio.wait_for(
-            model.ainvoke(f"{COMPARE_SYSTEM_PROMPT}\n\nQuestion: {message}"), LLM_TIMEOUT_SECONDS
-        )
-        text = extract_text(reply.content).strip()
-    except Exception as exc:
-        logger.info("Comparison model unavailable: %s", exc)
-        return None
-    if not passes_education_check(text):
-        logger.info("Comparison model reply rejected by the content check")
-        return None
-    return text
+    return await chat_ai.write(chat_ai.TASKS["compare"], message)
 
 
 async def compare(message: str, term_a: str | None, term_b: str | None) -> dict[str, Any]:
@@ -202,8 +200,11 @@ async def compare(message: str, term_a: str | None, term_b: str | None) -> dict[
         sides = [entry.term for entry in find_terms(message)[:2]]
     comparison = compare_terms(sides) if len(sides) >= 2 else None
     if comparison is not None:
+        reference = comparison.as_markdown()
+        written = await chat_ai.write(chat_ai.TASKS["compare"], message, reference=reference)
         return {
-            "text": comparison.as_text(),
+            "text": written or reference,
+            "answered_by": "ai" if written else "reviewed",
             "comparison": comparison.as_dict(),
             "suggestions": list(comparison.suggestions),
             "sources": _comparison_sources(comparison),

@@ -9,7 +9,14 @@ from typing import Any
 import pytest
 
 from investment_agent.market import live_universe
-from investment_agent.research import chat, chat_intent, chat_session, education, stock_list_chat
+from investment_agent.research import (
+    chat,
+    chat_ai,
+    chat_intent,
+    chat_session,
+    education,
+    stock_list_chat,
+)
 
 SYMBOL_MASTER: list[dict[str, str]] = [
     {"symbol": "TCS", "name": "Tata Consultancy Services Ltd"},
@@ -80,6 +87,7 @@ def _chat_isolation(fake_redis: FakeRedis, monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(chat_intent, "get_llm", no_llm)  # deterministic rules by default
     monkeypatch.setattr(education, "get_llm", no_llm)
+    monkeypatch.setattr(chat_ai, "get_llm", no_llm)  # AI answers fall back to reviewed text
     monkeypatch.setattr(stock_list_chat, "get_llm", no_llm)
 
 
@@ -113,6 +121,7 @@ def use_education_llm(monkeypatch: pytest.MonkeyPatch):
     def install(reply: str | Exception) -> FakeLLM:
         llm = FakeLLM(reply)
         monkeypatch.setattr(education, "get_llm", lambda *a, **k: llm)
+        monkeypatch.setattr(chat_ai, "get_llm", lambda *a, **k: llm)
         return llm
 
     return install

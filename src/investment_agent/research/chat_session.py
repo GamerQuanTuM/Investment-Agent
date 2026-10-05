@@ -31,6 +31,7 @@ def new_state() -> dict[str, Any]:
         "last_asked": None,  # name of the question we are waiting on
         "symbol_candidates": [],
         "last_result": None,  # {"intent": ..., "slots": {...}} of the last finished plan
+        "confirm": None,  # {"message", "kind"} of a sensitive question awaiting the user's OK
         "retry": None,  # {"intent", "slots"} of a reply that asked the user to "Try again"
         "history": [],  # [{"role": "user"|"assistant", "text": str}], last HISTORY_TURNS turns
     }

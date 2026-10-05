@@ -41,6 +41,7 @@ from investment_agent.research.chat_session import (
 )
 from investment_agent.research.evidence import Evidence, SourceType
 from investment_agent.research.formatting import inr, normalize_money_text, pct
+from investment_agent.research.glossary import asks_for_definition
 from investment_agent.research.guidance import guide_symbol
 from investment_agent.research.sip import (
     CATEGORY_PLAIN_LABELS,
@@ -69,6 +70,25 @@ _RISK_PLAIN_LABELS = {
 _RISK_TO_ETF_CAP_STYLE = {"conservative": "large", "moderate": "flexi", "aggressive": "small"}
 
 _RETRY_RE = re.compile(r"^(?:please\s+)?(?:try\s+again|retry)\s*[.!]*$", re.IGNORECASE)
+_YES_RE = re.compile(
+    r"^(?:yes|yeah|yep|y|sure|ok(?:ay)?|continue|go ahead|proceed|please do)(?:[,.!\s]+(?:continue|go ahead|please))?\W*$",
+    re.IGNORECASE,
+)
+_NO_RE = re.compile(r"^(?:no|nope|n|stop|cancel|not now|no thanks)(?:[,.!\s]+(?:stop|thanks))?\W*$", re.IGNORECASE)
+CONFIRM_CHIPS = ["Yes, continue", "No, stop"]
+CONFIRM_TEXT = (
+    "### Before I answer\n\n"
+    "This sounds like money that matters a lot to you, so I want to be careful.\n\n"
+    "- I can only share **general education**, not personal advice.\n"
+    "- *No one can promise an outcome*, and investments can lose value.\n"
+    "- If you may need this money soon, **protecting it usually matters more than growing it**.\n\n"
+    "Would you like me to continue with general information?"
+)
+STOP_TEXT = (
+    "Okay, I've stopped here. Whenever you're ready, I'm happy to explain something general, such as how "
+    "risk works or how to spread money across investments. For decisions about your own money, a "
+    "SEBI-registered adviser can look at your whole situation."
+)
 _RESET_RE = re.compile(r"\b(start\s+over|start\s+again|reset|new\s+chat|clear\s+chat)\b", re.IGNORECASE)
 
 OFF_TOPIC_MESSAGE = (
@@ -322,7 +342,7 @@ def _assume_beginner_defaults(slots: dict[str, Any]) -> list[str]:
 
 def _assumption_note(assumed: list[str], slots: dict[str, Any]) -> str:
     lead = "Since you're new, I" if slots.get("experience_level") == "beginner" else "To get you started, I"
-    return f"{lead} assumed {' and '.join(assumed)}. Tap an option below to change it."
+    return f"*{lead} assumed **{' and '.join(assumed)}**. Tap an option below to change it.*"
 
 
 def _assumed_extra(assumed: list[str], slots: dict[str, Any]) -> dict[str, Any]:
@@ -382,25 +402,25 @@ async def _etf_plan_reply(state: dict[str, Any]) -> dict[str, Any]:
         plan["kind"] = "lump_sum"
         plan["title"] = f"{inr(plan['amount_inr'])} one-time"
         lines = [
-            f"{row['label']} ({row['symbol']}): {inr(row['amount_inr'])} ({pct(row['weight_pct'])})"
+            f"- **{row['label']}** ({row['symbol']}): {inr(row['amount_inr'])} ({pct(row['weight_pct'])})"
             for row in plan["sleeves"]
         ]
         intro = (
-            f"For {inr(plan['amount_inr'])} one-time over {plan['horizon_years']} years, here's a starting "
-            "ETF mix (bought through your broker, a different mechanism from a mutual fund):\n"
+            f"For **{inr(plan['amount_inr'])} one-time** over {plan['horizon_years']} years, here's a starting "
+            "ETF mix (bought through your broker, a different mechanism from a mutual fund):\n\n"
         )
     else:
         plan["kind"] = "monthly"
         plan["title"] = f"{inr(plan['monthly_amount'])}/month"
         lines = [
-            f"{row['label']} ({row['symbol']}): {inr(row['monthly_inr'])} ({pct(row['weight_pct'])})"
+            f"- **{row['label']}** ({row['symbol']}): {inr(row['monthly_inr'])} ({pct(row['weight_pct'])})"
             for row in plan["sleeves"]
         ]
         intro = (
-            f"For {inr(plan['monthly_amount'])} a month over {plan['horizon_years']} years, here's a starting "
-            "ETF mix (bought through your broker — a different mechanism from a mutual fund SIP):\n"
+            f"For **{inr(plan['monthly_amount'])} a month** over {plan['horizon_years']} years, here's a starting "
+            "ETF mix (bought through your broker — a different mechanism from a mutual fund SIP):\n\n"
         )
-    text = intro + "\n".join(lines) + f"\n{plan['note']}"
+    text = intro + "\n".join(lines) + f"\n\n*{plan['note']}*"
     if assumed:
         text = f"{_assumption_note(assumed, slots)}\n\n{text}"
     return _body(
@@ -450,18 +470,18 @@ async def _lump_sum_fund_reply(state: dict[str, Any]) -> dict[str, Any]:
     }
     lines = []
     for row in rows:
-        line = f"{row['label']}: {inr(row['amount_inr'])} ({pct(row['weight_pct'])})"
+        line = f"- **{row['label']}**: {inr(row['amount_inr'])} ({pct(row['weight_pct'])})"
         if row["scheme_name"]:
             line += _return_suffix(row["return_3y_pct"], row["return_5y_pct"])
             if row["units"] is not None and row["latest_nav"] is not None:
                 line += f" · about {row['units']:,.3f} units at NAV {inr(row['latest_nav'])} ({row['nav_date']})"
         lines.append(line)
     text = (
-        f"For {inr(amount)} one-time over {result['horizon_years']} years, going with {risk_label}, "
-        "here's a mutual fund mix:\n"
+        f"For **{inr(amount)} one-time** over {result['horizon_years']} years, going with {risk_label}, "
+        "here's a mutual fund mix:\n\n"
         + "\n".join(lines)
-        + f"\n\n{result['spread_option']['note']}"
-        + f"\n\n{normalize_money_text(result['explanation'])}\n{result['note']}"
+        + f"\n\n> {result['spread_option']['note']}"
+        + f"\n\n{normalize_money_text(result['explanation'])}\n\n*{result['note']}*"
     )
     if assumed:
         text = f"{_assumption_note(assumed, slots)}\n\n{text}"
@@ -509,13 +529,13 @@ async def _fund_plan_reply(state: dict[str, Any]) -> dict[str, Any]:
     }
     lines = []
     for row in sleeves:
-        line = f"{row['label']}: {inr(row['monthly_inr'])} ({pct(row['weight_pct'])})"
+        line = f"- **{row['label']}**: {inr(row['monthly_inr'])} ({pct(row['weight_pct'])})"
         if row["scheme_name"] and row["return_pct"] is not None and row["return_window"]:
             line += f" · {pct(row['return_pct'])} over {row['return_window']}"
         lines.append(line)
     text = (
-        f"For {inr(result['monthly_amount'])}/month over {result['horizon_years']} years, going with {risk_label}, "
-        "here's a mutual fund mix:\n"
+        f"For **{inr(result['monthly_amount'])}/month** over {result['horizon_years']} years, going with {risk_label}, "
+        "here's a mutual fund mix:\n\n"
         + "\n".join(lines)
         + f"\n\n{normalize_money_text(result['explanation'])}"
     )
@@ -634,12 +654,18 @@ async def _dispatch(
         _apply_slots(state, ex)
         return intent, await _ranked_funds_reply(state)
     if intent == "guardrail":
-        stance = chat_guardrails.reply(message)
-        return intent, _body(stance["text"], suggestions=stance["suggestions"], guardrail=stance["kind"])
+        stance = await chat_guardrails.reply(message)
+        return intent, _body(
+            stance["text"],
+            suggestions=stance["suggestions"],
+            guardrail=stance["kind"],
+            answered_by=stance["answered_by"],
+        )
     if intent == "education":
         amount = state["slots"].get("amount_inr") or ex.slots.amount_inr
         answer = await education.explain(message, ex.slots.concept, amount)
         extra: dict[str, Any] = {"glossary": answer["glossary"]} if "glossary" in answer else {}
+        extra["answered_by"] = answer.get("answered_by", "reviewed")
         if _OFF_TOPIC_RE.search(message):  # "capital of France, also what is NAV?"
             extra["notice"] = "I can only help with investing, so I've answered just that part."
         return intent, _body(
@@ -651,6 +677,7 @@ async def _dispatch(
             answer["text"],
             suggestions=answer["suggestions"],
             sources=answer["sources"],
+            answered_by=answer.get("answered_by", "ai"),
             **({"comparison": answer["comparison"]} if "comparison" in answer else {}),
         )
     if intent == "market_overview":
@@ -658,6 +685,61 @@ async def _dispatch(
     if intent == "portfolio_help":
         return intent, await chat_market.portfolio_help_reply()
     return "unclear", _unclear_reply(ex)
+
+
+async def _ask_confirmation(
+    session_id: str, state: dict[str, Any], message: str, kind: str
+) -> dict[str, Any]:
+    """Human in the loop: a sensitive question is not answered until the person confirms they
+    want general information. The pending question is kept in the session."""
+    logger.info("HITL: sensitive question held for confirmation (kind=%s)", kind)
+    state["confirm"] = {"message": message, "kind": kind}
+    body = _body(
+        CONFIRM_TEXT,
+        needs_input=True,
+        suggestions=list(CONFIRM_CHIPS),
+        hitl={"required": True, "kind": kind, "status": "awaiting_confirmation"},
+    )
+    add_turn(state, message, body["text"])
+    await save_session(session_id, state)
+    return {
+        "session_id": session_id,
+        "intent": "guardrail",
+        "collected": _collected_view(state),
+        "sources": [],
+        **body,
+    }
+
+
+async def _finish_confirmation(
+    session_id: str, state: dict[str, Any], message: str, pending: dict[str, Any]
+) -> dict[str, Any]:
+    if _YES_RE.match(message):
+        logger.info("HITL: sensitive question confirmed (kind=%s)", pending["kind"])
+        stance = await chat_guardrails.reply(pending["message"], pending["kind"])
+        body = _body(
+            stance["text"],
+            suggestions=stance["suggestions"],
+            guardrail=stance["kind"],
+            answered_by=stance["answered_by"],
+            hitl={"required": True, "kind": pending["kind"], "status": "confirmed"},
+        )
+    else:
+        logger.info("HITL: sensitive question declined (kind=%s)", pending["kind"])
+        body = _body(
+            STOP_TEXT,
+            suggestions=["What is risk vs return?", "What is diversification?"],
+            hitl={"required": True, "kind": pending["kind"], "status": "declined"},
+        )
+    add_turn(state, message, body["text"])
+    await save_session(session_id, state)
+    return {
+        "session_id": session_id,
+        "intent": "guardrail",
+        "collected": _collected_view(state),
+        "sources": [],
+        **body,
+    }
 
 
 async def chat_turn(session_id: str, message: str) -> dict[str, Any]:
@@ -673,6 +755,12 @@ async def chat_turn(session_id: str, message: str) -> dict[str, Any]:
 
     state = await load_session(session_id)
     master = await load_symbol_master()
+    pending_confirm = state.pop("confirm", None)
+    if pending_confirm and (_YES_RE.match(message) or _NO_RE.match(message)):
+        return await _finish_confirmation(session_id, state, message, pending_confirm)
+    sensitive_kind = None if asks_for_definition(message.lower()) else chat_guardrails.sensitive(message)
+    if sensitive_kind:
+        return await _ask_confirmation(session_id, state, message, sensitive_kind)
     pending_retry = state.get("retry")
     state["retry"] = None
     if pending_retry and _RETRY_RE.match(message):

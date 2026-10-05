@@ -153,17 +153,42 @@ cheap model under a system prompt that forbids prices, returns, tickers and reco
 a mechanical check discards any reply containing digits, currency, tickers or advice, and the
 user then gets the list of terms we can explain.
 
-### Guardrails (`guardrail`)
+### AI-written answers under guardrails (`research/chat_ai.py`)
 
-Decided by rules alone, before and without any model call, so a model can neither miss nor soften
-them. Three fixed replies, each ending with the "not SEBI-registered investment advice"
-disclaimer and containing no figures, tickers or buy language:
+Explanations ("what is an ETF"), comparisons and the safety replies are **written by the model**,
+not served from fixed text. The model is given the reviewed glossary / comparison facts as
+*reference*, told to answer the person's actual question in its own words, and to write
+**Markdown** (bullets, **bold**, *italics*, tables). Python still decides what it may say:
 
-- **prediction**: it never forecasts or gives target prices; it explains that it only shows
-  measurable past quality, valuation, trend and steadiness, with sources and dates.
-- **guarantee**: nothing in the market, including a SIP, is guaranteed; you can get back less.
-- **emergency**: job loss, emergency savings, money needed soon, borrowed money: it warns against
-  small caps and risky products for that money and points to safe, easy-to-withdraw places.
+- **Mechanical check before anyone sees it** (`passes_ai_check`): no currency amounts, percentages,
+  tickers (only known acronyms such as ETF, SIP, NAV), forecasts, promises or buy/sell
+  instructions. A reply that fails the check, errors or takes longer than 40 s is thrown away and
+  the **reviewed text** (also Markdown) is shown, so a model slip never reaches the user and an
+  outage never blocks an answer. The response says which one was used: `answered_by: "ai" |
+  "reviewed"`, and the UI labels AI-written replies.
+- **No numbers from the model.** Plans, stock lists, funds, returns and budgets are computed in
+  Python; the model only ever phrases glossary-level concepts.
+- The structured `glossary` / `comparison` fields are still returned for API clients.
+
+### Guardrails (`guardrail`) and human in the loop
+
+Detection is by rules, before and without any model, so a model can neither miss nor soften it:
+
+- **prediction** ("which stock will double", "target price for TCS"): the model politely declines
+  and explains what can be shown (past quality, valuation, trend, steadiness).
+- **guarantee** ("is a SIP guaranteed"): nothing in the market is guaranteed.
+- **emergency** (job loss, emergency savings, money needed soon, borrowed money, retirement or
+  child-education money) and **all_in** ("all my savings in one stock"): **sensitive**.
+
+Every guardrail reply ends with the not-registered-advice disclaimer.
+
+**Human in the loop.** A sensitive question is *not answered immediately*. The chat first replies
+with a confirmation (`hitl: {"required": true, "status": "awaiting_confirmation"}`, chips
+"Yes, continue" / "No, stop") that says it can only give general education and that money needed
+soon should be protected. Only after "Yes" does the model write the answer
+(`hitl.status: "confirmed"`, plus a pointer to a SEBI-registered adviser); "No" stops
+(`declined`). Sending anything else clears the pending question. A plain definition question
+("what is an emergency fund?") is not held. Each hold/confirm/decline is logged.
 
 A message that only gives an amount and an investing verb ("I have 50000, how should I invest
 it?") becomes a fund plan, and a clear amount with a known kind (one-time/monthly) and nothing
@@ -185,7 +210,8 @@ terms we know, and never when the message is a request such as "suggest stocks o
 into a single definition. `glossary.find_terms()` returns every glossary term in a message in
 order (`find_term()` still returns just one).
 
-`education.compare` answers in three tiers:
+`education.compare` answers in three tiers (the model writes the answer from the tier's table as
+reference; the reviewed table is the fallback):
 
 1. **Curated table** (`glossary.py`): ETF vs mutual fund, SIP vs lump sum, index vs active fund,
    direct vs regular plan, growth vs IDCW/dividend option, large vs mid vs small cap (and each
@@ -204,6 +230,13 @@ the three-way cap table). The chat UI renders it as `ComparisonCard`: a table fr
 stacked rows on a phone. Chips: "Plan a SIP in a mutual fund", "What is NAV?" (stock pairs offer
 "Suggest 10 stocks for ₹10,000").
 
+## Rich text
+
+Replies are Markdown. The chat UI renders bullets, numbered lists, **bold**, *italics*, block
+quotes and tables (`RichText`, react-markdown + GFM). Fund plans are bullet lists with bold fund
+names, the stock list is a numbered list with bold symbols, comparisons are tables, and caveats
+and disclaimers are italic. Plain-text clients still read it fine.
+
 ## Response contract
 
 ```jsonc
@@ -217,6 +250,8 @@ stacked rows on a phone. Chips: "Plan a SIP in a mutual fund", "What is NAV?" (s
                   "caveats": [], "reality_check": "…", "sector_split": [], "disclaimer": "…" },
   "comparison": { "title", "columns": ["A","B"], "rows": [{ "label", "a", "b" }], "takeaway" },
   "plan": { "kind": "monthly" | "lump_sum", "title": "₹50,000 one-time", "sleeves": [], "spread_option": {} },
+  "answered_by": "ai" | "reviewed",                 // who wrote an explanation/comparison/guardrail reply
+  "hitl": { "required": true, "kind": "emergency", "status": "awaiting_confirmation" | "confirmed" | "declined" },
   "assumed": { "horizon_years": 5, "risk_profile": "moderate" },   // only when defaults were assumed
   "guidance": {}, "ranking": [], "glossary": { "term", "definition", "example" },
   "data_status": "LOADING" | "DATA_UNAVAILABLE"   // only when data is loading / missing

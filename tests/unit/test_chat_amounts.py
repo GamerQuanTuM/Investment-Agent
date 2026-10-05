@@ -193,7 +193,7 @@ async def test_capital_message_is_a_one_time_plan_with_named_funds(fake_plans, u
 async def test_a_clear_amount_gets_a_plan_with_stated_defaults_not_two_questions(fake_plans):
     result = await chat.chat_turn(_sid(), CAPITAL_MESSAGE)
     assert result["needs_input"] is False and "one-time" in result["text"]
-    assert "To get you started, I assumed 5 years and a balanced mix" in result["text"]
+    assert "To get you started, I assumed 5 years and a balanced mix" in result["text"].replace("*", "")
     assert fake_plans.lump == [(50000.0, 5, "moderate")] and not fake_plans.mix
 
 
@@ -286,7 +286,7 @@ async def test_beginner_gets_defaults_stated_and_can_change_them_with_chips(fake
     session = _sid()
     result = await chat.chat_turn(session, "I am new. Plan a SIP of ₹5,000 per month")
     assert result["needs_input"] is False
-    assert "I assumed 5 years and a balanced mix" in result["text"]
+    assert "I assumed 5 years and a balanced mix" in result["text"].replace("*", "")
     assert result["assumed"] == {"horizon_years": 5, "risk_profile": "moderate"}
     assert "What about 10 years?" in result["suggestions"]
     assert "What about a safer mix?" in result["suggestions"]
@@ -302,7 +302,8 @@ async def test_beginner_gets_defaults_stated_and_can_change_them_with_chips(fake
 async def test_a_beginner_who_stated_the_horizon_is_not_second_guessed(fake_plans):
     result = await chat.chat_turn(_sid(), "I am new. Plan a SIP of ₹5,000 per month for 8 years")
     assert fake_plans.mix == [(5000.0, 8, "moderate")]
-    assert "I assumed a balanced mix" in result["text"] and "years and" not in result["text"]
+    plain = result["text"].replace("*", "")
+    assert "I assumed a balanced mix" in plain and "years and" not in plain
 
 
 # ----------------------------------------------------------------- ETF one-time

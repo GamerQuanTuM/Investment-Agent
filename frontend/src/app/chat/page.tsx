@@ -15,10 +15,9 @@ import {
   Send,
 } from "lucide-react";
 import { sendChat } from "@/lib/api";
-import { ChatCollected, ChatComparison, ChatReply, EvidenceItem, GlossaryEntry, GuidanceNote, StockPlan } from "@/lib/types";
+import { ChatCollected, ChatReply, EvidenceItem, GuidanceNote, StockPlan } from "@/lib/types";
 import { DataUnavailableTile, StockPlanCard } from "@/components/StockPlanCard";
-import { ComparisonCard } from "@/components/ComparisonCard";
-import { GlossaryCard } from "@/components/GlossaryCard";
+import { RichText } from "@/components/RichText";
 import { SourceChips } from "@/components/SourceChips";
 
 type Plan = NonNullable<ChatReply["plan"]>;
@@ -30,9 +29,9 @@ type Bubble = {
   guidance?: GuidanceNote;
   plan?: Plan;
   stockPlan?: StockPlan;
-  glossary?: GlossaryEntry;
-  comparison?: ChatComparison;
   notice?: string;
+  answeredBy?: "ai" | "reviewed";
+  awaitingConfirmation?: boolean;
   sources?: EvidenceItem[];
   suggestions?: string[];
   dataUnavailable?: boolean;
@@ -84,7 +83,10 @@ function timestamp() {
 function textBesideStockPlan(text: string) {
   const parts = text.split("\n\n");
   return [parts[0], ...parts.slice(3)]
-    .filter((part) => !part.startsWith("Reality check") && !part.startsWith("Educational guidance"))
+    .filter((part) => {
+      const plain = part.replace(/^[*_\s>]+/, "");
+      return !plain.startsWith("Reality check") && !plain.startsWith("Educational guidance");
+    })
     .join("\n\n");
 }
 
@@ -223,9 +225,9 @@ export default function ChatPage() {
           guidance: reply.guidance,
           plan: reply.plan,
           stockPlan: reply.stock_plan ?? undefined,
-          glossary: reply.glossary,
-          comparison: reply.comparison,
           notice: reply.notice,
+          answeredBy: reply.answered_by,
+          awaitingConfirmation: reply.hitl?.status === "awaiting_confirmation",
           sources: reply.sources,
           suggestions: reply.suggestions,
           dataUnavailable: reply.data_status === "DATA_UNAVAILABLE",
@@ -296,7 +298,7 @@ export default function ChatPage() {
         <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto p-4" aria-live="polite">
           {messages.map((message, index) => {
             const isAgent = message.role === "agent";
-            const showText = !((message.glossary || message.comparison) && !message.isError);
+            const showText = true;
             return (
               <div key={`${message.role}-${index}`} className={`flex items-end gap-2 ${isAgent ? "" : "flex-row-reverse"}`}>
                 <span
@@ -308,9 +310,11 @@ export default function ChatPage() {
                 </span>
                 <div className={`flex min-w-0 max-w-[88%] flex-col ${isAgent ? "items-start" : "items-end"}`}>
                   <div
-                    className={`max-w-full rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed whitespace-pre-line ${
+                    className={`max-w-full rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed ${
                       message.isError
                         ? "border border-(--bear-red)/40 bg-(--bear-red-soft) text-(--bear-red)"
+                        : message.awaitingConfirmation
+                          ? "border-2 border-(--section-gold)/60 bg-(--section-gold-soft) text-(--text-primary)"
                         : isAgent
                           ? "card-row text-(--text-primary)"
                           : "bg-(--section-chat) text-white"
@@ -320,12 +324,15 @@ export default function ChatPage() {
                       <DataUnavailableTile message={message.text} />
                     ) : (
                       <>
-                        {showText && (message.stockPlan ? textBesideStockPlan(message.text) : message.text)}
+                        {showText &&
+                          (isAgent ? (
+                            <RichText text={message.stockPlan ? textBesideStockPlan(message.text) : message.text} />
+                          ) : (
+                            message.text
+                          ))}
                         {message.notice && (
                           <p className="mb-2 text-xs italic text-(--text-secondary)">{message.notice}</p>
                         )}
-                        {message.glossary && <GlossaryCard entry={message.glossary} />}
-                        {message.comparison && <ComparisonCard comparison={message.comparison} />}
                       </>
                     )}
                     {message.stockPlan && (
@@ -336,6 +343,11 @@ export default function ChatPage() {
                     {message.guidance && <GuidanceCard guidance={message.guidance} />}
                     {message.plan && <PlanCard plan={message.plan} />}
                     {message.sources && <SourceChips sources={message.sources} />}
+                    {isAgent && message.answeredBy === "ai" && (
+                      <p className="mt-2 text-[10px] uppercase tracking-wide text-(--text-muted)">
+                        AI-written · checked by safety rules
+                      </p>
+                    )}
                   </div>
                   {isAgent && message.suggestions && (
                     <Chips

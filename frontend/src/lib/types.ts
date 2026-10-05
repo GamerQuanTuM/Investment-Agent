@@ -476,6 +476,8 @@ export interface ChatReply {
   glossary?: GlossaryEntry;
   comparison?: ChatComparison;
   notice?: string;
+  answered_by?: "ai" | "reviewed";
+  hitl?: { required: boolean; kind: string; status: "awaiting_confirmation" | "confirmed" | "declined" };
   guidance?: GuidanceNote;
   plan?: {
     kind?: "monthly" | "lump_sum";

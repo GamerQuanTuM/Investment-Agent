@@ -145,7 +145,7 @@ def render_rows(plan: dict[str, Any], *, beginner: bool) -> str:
     lines = []
     for i, r in enumerate(plan["rows"], start=1):
         line = (
-            f"{i}. {r['symbol']} ({r['sector']}): {r['shares']} share{'s' if r['shares'] != 1 else ''} "
+            f"{i}. **{r['symbol']}** ({r['sector']}): {r['shares']} share{'s' if r['shares'] != 1 else ''} "
             f"at {inr(r['price'])} = {inr(r['amount_inr'])} ({r['weight_pct']}%)"
         )
         if not beginner and r["why"]:
@@ -226,7 +226,7 @@ async def stock_list_reply(slots: dict[str, Any]) -> dict[str, Any]:
     if plan["risk_profile"] == "conservative" and slots.get("risk_profile") == "conservative":
         blocks.append(CAUTIOUS_NOTE)
     blocks.extend(c for c in plan["caveats"] if c)
-    blocks.append(plan["disclaimer"])
+    blocks.append(f"*{plan['disclaimer']}*")
 
     chosen = {c.symbol: c for c in kept}
     suggestions = list(FOLLOWUP_CHIPS)

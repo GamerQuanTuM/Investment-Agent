@@ -669,6 +669,13 @@ class Comparison:
             "takeaway": self.takeaway,
         }
 
+    def as_markdown(self) -> str:
+        header = "| | " + " | ".join(self.columns) + " |"
+        divider = "|---|" + "---|" * len(self.columns)
+        body = [f"| **{row[0]}** | " + " | ".join(row[1:]) + " |" for row in self.rows]
+        takeaway = f"**Which is simpler for a beginner?** {self.takeaway}"
+        return "\n".join([f"### {self.title}", "", header, divider, *body, "", takeaway])
+
     def as_text(self) -> str:
         lines = [self.title, ""]
         for row in self.rows:

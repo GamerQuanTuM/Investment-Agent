@@ -297,7 +297,7 @@ def reality_check(budget: float, rows: list[dict[str, Any]], leftover: float) ->
     if average >= SMALL_POSITION_INR:
         return None
     return (
-        f"Reality check: {inr(budget)} split across {len(rows)} stocks is only about "
+        f"**Reality check:** {inr(budget)} split across {len(rows)} stocks is only about "
         f"{inr(average)} per stock. Shares are bought whole, so {inr(leftover)} stays unused after "
         "rounding. Brokerage and demat (DP) charges are charged per trade, so they weigh much "
         "more on small positions. For a small amount, one diversified index fund or ETF "

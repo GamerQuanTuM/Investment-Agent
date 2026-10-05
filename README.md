@@ -144,6 +144,11 @@ terms, and a guarded model only for terms we don't hold. A one-time amount ("I h
 capital") gets a one-time fund allocation with units and an optional spread-over-months SIP, never
 a monthly plan; if the chat can't tell which you mean it asks once.
 
+Explanations, comparisons and safety replies are written by the model in Markdown under strict
+guardrails (no figures, tickers, forecasts or advice; a mechanical check falls back to reviewed
+text), and sensitive questions (emergency money, all-in bets) wait for the user's confirmation
+before they are answered.
+
 Tickers only ever come from the stock master in the database, never from the model.
 "N stocks for ₹X" is selected and sized entirely in Python (whole shares, sector and
 market-cap caps, leftover cash reported, honest small-budget reality check); a model may only
