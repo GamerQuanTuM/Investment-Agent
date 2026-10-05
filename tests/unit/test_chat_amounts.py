@@ -429,3 +429,21 @@ def test_normalize_money_text_rewrites_every_spelling_and_keeps_punctuation():
     )
     assert normalize_money_text("pay ₹5,000, then wait") == "pay ₹5,000, then wait"
     assert normalize_money_text("no money here, only 12.5% growth") == "no money here, only 12.5% growth"
+
+
+async def test_every_ranking_path_skips_dormant_and_non_growth_funds(monkeypatch: pytest.MonkeyPatch):
+    """`_best_pick` feeds suggest_mix (monthly plans, the SIP page) and rank_funds too."""
+    histories = {
+        "1": ("Live Large Cap Fund - Direct Plan - Growth", 1),
+        "2": ("Dead Large Cap Fund - Direct Plan - Growth", 2000),
+        "3": ("Live Large Cap Fund - Direct Plan - Bonus", 1),
+    }
+
+    async def fetch(code: str):
+        name, age = histories[code]
+        return {"scheme_code": code, "scheme_name": name, "nav_history": _history(age_days=age)}
+
+    monkeypatch.setattr(sip, "fetch_nav_history", fetch)
+    picks = {code: await sip._best_pick(SimpleNamespace(scheme_code=code, name=histories[code][0])) for code in histories}
+    assert picks["1"] is not None
+    assert picks["2"] is None and picks["3"] is None

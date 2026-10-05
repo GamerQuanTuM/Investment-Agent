@@ -345,6 +345,11 @@ async def _best_pick(scheme: Any, span_years: float = 5.0) -> dict[str, Any] | N
     if history is None or not history.get("nav_history"):
         return None
     nav_history = history["nav_history"]
+    # Closed/merged schemes keep an old NAV and can still rank well on it, and Bonus/IDCW
+    # share classes are not the growth option the plans are built on: never pick either.
+    candidate = {"scheme": scheme, "history": history}
+    if not _is_current_growth_fund(candidate, datetime.now(UTC).date()):
+        return None
     period = period_return_pct(nav_history, span_years)
     if period is None:
         return None

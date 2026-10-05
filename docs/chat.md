@@ -173,7 +173,7 @@ else is planned straight away with stated defaults (5 years, balanced), not inte
 explanation) is bounded (10-12 s); on timeout the deterministic rules/templates answer, so a stalled
 model never stalls the chat. The web client also gives up after 90 s with a clear message.
 
-**Fund freshness**: a one-time plan never names a fund whose newest NAV is more than 10 days old
+**Fund freshness**: no plan (monthly, one-time, the SIP page, fund rankings) ever names a fund whose newest NAV is more than 10 days old
 (closed or merged schemes can still rank well on old data) or a Bonus/IDCW/Payout share class.
 
 ### Comparisons (`compare`)
