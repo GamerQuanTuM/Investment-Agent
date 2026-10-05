@@ -394,3 +394,84 @@ export interface ResearchRunResult {
   warnings: string[];
   errors: string[];
 }
+
+/** One source behind a figure, as returned in the `sources` array of a chat reply. */
+export interface EvidenceItem {
+  claim: string;
+  source_name: string;
+  source_url: string;
+  source_type: string;
+  data_date: string | null;
+  retrieved_at: string;
+}
+
+export interface StockPlanRow {
+  symbol: string;
+  name: string;
+  sector: string;
+  market_cap_band: string;
+  price: number | null;
+  shares: number;
+  amount_inr: number;
+  weight_pct: number;
+  target_weight_pct: number;
+  score: number;
+  /** Top two measured factors, e.g. "Business quality 78/100 (ROE 22.1%)". */
+  why: string[];
+  data_as_of: string;
+}
+
+export interface StockPlan {
+  status: "OK";
+  budget: number;
+  rows: StockPlanRow[];
+  total_invested: number;
+  leftover: number;
+  data_as_of: string | null;
+  sector_split: { sector: string; pct: number }[];
+  caveats: string[];
+  reality_check: string | null;
+  growth_note: string;
+  disclaimer: string;
+  risk_profile: string;
+}
+
+export interface GlossaryEntry {
+  term: string;
+  definition: string;
+  example: string;
+}
+
+export interface ChatCollected {
+  intent: string | null;
+  symbol: string | null;
+  horizon_years: number | null;
+  monthly_amount: number | null;
+  amount_inr: number | null;
+  amount_kind: "lump_sum" | "monthly" | null;
+  risk: string | null;
+  stock_count: number | null;
+  experience_level: "beginner" | "intermediate" | null;
+}
+
+export interface ChatReply {
+  session_id: string;
+  text: string;
+  needs_input: boolean;
+  error?: boolean;
+  intent: string | null;
+  collected: ChatCollected;
+  suggestions: string[];
+  sources: EvidenceItem[];
+  data_status?: "DATA_UNAVAILABLE";
+  stock_plan?: StockPlan | null;
+  glossary?: GlossaryEntry;
+  guidance?: GuidanceNote;
+  plan?: {
+    style: string;
+    horizon_years: number;
+    monthly_amount: number;
+    note: string;
+    sleeves: { symbol: string; label: string; weight_pct: number; monthly_inr: number }[];
+  };
+}

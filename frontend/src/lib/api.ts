@@ -1,4 +1,5 @@
 import {
+  ChatReply,
   HealthStatus,
   BrokerVaultState,
   StockQuote,
@@ -163,20 +164,7 @@ export function sendChat(sessionId: string, message: string) {
     body: JSON.stringify({ session_id: sessionId, message }),
   }).then(async (res) => {
     if (!res.ok) throw new Error(await res.text());
-    return res.json() as Promise<{
-      text: string;
-      needs_input: boolean;
-      error?: boolean;
-      collected: {
-        intent: "stock" | "sip" | null;
-        symbol: string | null;
-        horizon_years: number | null;
-        monthly_amount: number | null;
-        risk: string | null;
-      };
-      guidance?: GuidanceNote;
-      plan?: SipPlan;
-    }>;
+    return res.json() as Promise<ChatReply>;
   });
 }
 
