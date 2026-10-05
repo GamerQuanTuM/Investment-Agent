@@ -56,7 +56,11 @@ class SipRequest(BaseModel):
 
 @router.post("/chat")
 async def research_chat(request: ChatRequest) -> dict[str, Any]:
-    """Ask follow-up questions until intent, horizon, amount, and style are known."""
+    """One chat turn. Classifies the message into an intent (education, stock_list, stock_single,
+    plan_sip_fund, plan_sip_etf, fund_list, market_overview, portfolio_help, off_topic, unclear),
+    fills slots from everything the user already said and asks only for what is missing.
+    Response: session_id, text, needs_input, intent, collected, suggestions, sources, plus
+    stock_plan / plan / guidance / ranking / glossary depending on the intent."""
     return await chat_turn(request.session_id, request.message)
 
 

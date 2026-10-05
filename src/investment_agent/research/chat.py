@@ -23,7 +23,7 @@ import re
 from typing import Any
 
 from investment_agent.market.universe import load_symbol_master
-from investment_agent.research import education
+from investment_agent.research import chat_market, education, stock_list_chat
 from investment_agent.research.chat_intent import Extraction, extract, search_universe
 from investment_agent.research.chat_session import (
     add_turn,
@@ -296,13 +296,6 @@ async def _fund_plan_reply(state: dict[str, Any]) -> dict[str, Any]:
     return _body(text, plan=plan)
 
 
-async def _not_available_yet(intent: str) -> dict[str, Any]:
-    return _body(
-        "I can't answer that kind of question yet. Pick one of these instead:",
-        suggestions=list(STARTER_SUGGESTIONS),
-    )
-
-
 # ---------------------------------------------------------------------------- engine
 
 
@@ -316,9 +309,10 @@ def _start_flow(state: dict[str, Any], ex: Extraction) -> None:
     last = state.get("last_result")
     if ex.intent in ("plan_sip_fund", "plan_sip_etf") and last and last["intent"] == "stock_list":
         previous = last["slots"]
+        defaults = last.get("defaults", {})
         for name in ("amount_inr", "horizon_years", "risk_profile"):
-            if previous.get(name):
-                carried[name] = previous[name]
+            if previous.get(name) or defaults.get(name):
+                carried[name] = previous.get(name) or defaults[name]
         carried["amount_kind"] = "monthly"
     state["slots"] = carried
     state["intent"] = ex.intent
@@ -349,10 +343,14 @@ async def _run_flow(
     elif flow == "plan_sip_etf":
         body = await _etf_plan_reply(state)
     elif flow == "stock_list":
-        body = await _not_available_yet(flow)
+        body = await stock_list_chat.stock_list_reply(slots)
     else:
         body = await _fund_plan_reply(state)
-    state["last_result"] = {"intent": flow, "slots": dict(slots)}
+    state["last_result"] = {
+        "intent": flow,
+        "slots": dict(slots),
+        "defaults": body.pop("plan_defaults", {}),
+    }
     state["intent"] = None
     state["last_asked"] = None
     return body
@@ -362,6 +360,14 @@ async def _dispatch(
     state: dict[str, Any], ex: Extraction, message: str, master: list[dict[str, str]]
 ) -> tuple[str, dict[str, Any]]:
     intent = ex.intent
+    last = state.get("last_result")
+    if (
+        intent == "answer"
+        and not state["intent"]
+        and ex.slots.stock_count
+        and not (last and last["intent"] == "stock_list")
+    ):
+        intent = "stock_list"  # "make it 8 stocks" after a non-stock plan is a new list request
     if intent == "answer":
         if state["intent"]:
             pass  # keep filling the open flow
@@ -397,8 +403,10 @@ async def _dispatch(
             sources=answer["sources"],
             **({"glossary": answer["glossary"]} if "glossary" in answer else {}),
         )
-    if intent in ("market_overview", "portfolio_help"):
-        return intent, await _not_available_yet(intent)
+    if intent == "market_overview":
+        return intent, await chat_market.market_overview_reply()
+    if intent == "portfolio_help":
+        return intent, await chat_market.portfolio_help_reply()
     return "unclear", _unclear_reply(ex)
 
 

@@ -1,0 +1,213 @@
+"""Chat handler for "give me N stocks for ₹X".
+
+The picker (`portfolio/stock_picker.py`) decides every symbol, share count and amount. This
+module only fetches its inputs, wraps the result for the UI and writes the words around it:
+a cheap-tier model may write a 2-3 sentence plain-English intro from the structured result,
+and `llm_guard.is_grounded` throws that text away (falling back to the template) if it
+contains any ticker or number the result does not hold. The per-stock lines, totals, reality
+check and disclaimer are always deterministic.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from datetime import UTC, datetime
+from typing import Any
+
+from investment_agent.llm.factory import extract_text, get_llm
+from investment_agent.portfolio.stock_picker import (
+    DEFAULT_STOCKS,
+    Candidate,
+    build_stock_plan,
+    clamp_count,
+    filter_candidates,
+    load_pick_universe,
+    pick_filters,
+)
+from investment_agent.research.evidence import Evidence, SourceType
+from investment_agent.research.llm_guard import is_grounded
+
+logger = logging.getLogger(__name__)
+
+DATA_NOT_LOADED = (
+    "Market data isn't loaded yet, so I can't build a stock list without guessing. "
+    "Run the data sync first (POST /market/refresh, then POST /market/fundamentals) and ask again."
+)
+BEGINNER_RISK_LINE = (
+    "Stocks can fall as well as rise, so only invest money you won't need soon."
+)
+FOLLOWUP_CHIPS = ["Prefer one index fund/ETF SIP instead?", "What about safer ones?"]
+
+
+def _unavailable(text: str, reason: str) -> dict[str, Any]:
+    return {
+        "text": text,
+        "needs_input": False,
+        "suggestions": ["What is an ETF?", "Plan a ₹5,000 monthly SIP"],
+        "data_status": "DATA_UNAVAILABLE",
+        "data_reason": reason,
+        "stock_plan": None,
+        "sources": [],
+    }
+
+
+def _inr(value: float) -> str:
+    return f"₹{value:,.0f}"
+
+
+def template_summary(plan: dict[str, Any], *, monthly: bool) -> str:
+    n = len(plan["rows"])
+    per = " a month" if monthly else ""
+    return (
+        f"Here are {n} stocks for your {_inr(plan['budget'])}{per}, picked by past quality, valuation, "
+        "price trend and steadiness, with no more than two from any one sector. "
+        "These describe the past, not a forecast."
+    )
+
+
+def _facts_for_model(plan: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "budget_inr": plan["budget"],
+        "total_invested_inr": plan["total_invested"],
+        "leftover_inr": plan["leftover"],
+        "data_as_of": plan["data_as_of"],
+        "stocks": [
+            {
+                "symbol": r["symbol"],
+                "sector": r["sector"],
+                "shares": r["shares"],
+                "amount_inr": r["amount_inr"],
+                "weight_pct": r["weight_pct"],
+            }
+            for r in plan["rows"]
+        ],
+        "sector_split_pct": plan["sector_split"],
+    }
+
+
+async def narrate(plan: dict[str, Any], *, monthly: bool) -> str:
+    """Model intro if it is fully grounded in `plan`, else the deterministic template."""
+    fallback = template_summary(plan, monthly=monthly)
+    facts = _facts_for_model(plan)
+    try:
+        model = get_llm("cheap")
+        reply = await model.ainvoke(
+            "Write 2 or 3 short plain-English sentences introducing this stock list for a "
+            "beginner. Use ONLY the symbols and numbers in the JSON; do not add any other "
+            "company, price, return or percentage. Do not predict, give targets, or tell the "
+            "user to buy now. State that these are past figures, not a forecast.\n"
+            f"JSON: {json.dumps(facts)}"
+        )
+        text = extract_text(reply.content).strip()
+    except Exception as exc:
+        logger.info("Stock-list narration unavailable: %s", exc)
+        return fallback
+    if is_grounded(text, {"plan": facts, "budget": plan["budget"]}, [r["symbol"] for r in plan["rows"]]):
+        return text
+    logger.info("Stock-list narration rejected by the grounding check")
+    return fallback
+
+
+def render_rows(plan: dict[str, Any], *, beginner: bool) -> str:
+    lines = []
+    for i, r in enumerate(plan["rows"], start=1):
+        line = (
+            f"{i}. {r['symbol']} ({r['sector']}): {r['shares']} share{'s' if r['shares'] != 1 else ''} "
+            f"at {_inr(r['price'])} = {_inr(r['amount_inr'])} ({r['weight_pct']}%)"
+        )
+        if not beginner and r["why"]:
+            line += f" — {r['why'][0]}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _sources(plan: dict[str, Any], chosen: dict[str, Candidate]) -> list[dict[str, Any]]:
+    price_date = datetime.fromisoformat(plan["data_as_of"]).replace(tzinfo=UTC) if plan["data_as_of"] else None
+    sources = [
+        Evidence(
+            claim=f"Latest stored closing prices for {len(plan['rows'])} stocks",
+            source_name="INDstocks daily bars",
+            source_url="https://api.indstocks.com/market/historical/1day",
+            source_type=SourceType.INDSTOCKS,
+            data_date=price_date,
+        )
+    ]
+    seen: set[str] = set()
+    for row in plan["rows"]:
+        cand = chosen.get(row["symbol"])
+        if cand is None or not cand.source_name or cand.source_name in seen or len(seen) >= 3:
+            continue
+        seen.add(cand.source_name)
+        sources.append(
+            Evidence(
+                claim="Fundamentals (ROE, ROCE, growth, debt, market cap)",
+                source_name=cand.source_name,
+                source_url=cand.source_url,
+                source_type=SourceType.FINANCIAL_DATA_PROVIDER,
+                data_date=cand.data_date,
+            )
+        )
+    return [s.model_dump(mode="json") for s in sources]
+
+
+async def stock_list_reply(slots: dict[str, Any]) -> dict[str, Any]:
+    """Build the chat reply for a stock-list request whose amount is already known."""
+    universe = await load_pick_universe()
+    if not universe:
+        return _unavailable(DATA_NOT_LOADED, "empty_universe")
+    kept, excluded = filter_candidates(universe, now=datetime.now(UTC), **pick_filters())
+    if not kept:
+        return _unavailable(
+            "None of the stocks I hold passed my data checks (fresh price, fundamentals, "
+            "enough trading volume), so I won't guess. The market data may need a refresh "
+            "(POST /market/refresh).",
+            "no_eligible_stocks",
+        )
+
+    beginner = slots.get("experience_level") == "beginner"
+    monthly = slots.get("amount_kind") == "monthly"
+    count = clamp_count(slots.get("stock_count") or DEFAULT_STOCKS)
+    plan = build_stock_plan(
+        kept,
+        budget=float(slots["amount_inr"]),
+        count=count,
+        risk_profile=slots.get("risk_profile"),
+        experience_level=slots.get("experience_level"),
+        sectors_wanted=slots.get("sectors_wanted") or None,
+        horizon_years=slots.get("horizon_years") or 5,
+    )
+    if plan["status"] != "OK":
+        return _unavailable(plan["message"], plan["reason"])
+
+    plan["excluded"] = excluded
+    intro = await narrate(plan, monthly=monthly)
+    blocks = [intro, render_rows(plan, beginner=beginner)]
+    blocks.append(
+        f"Invested {_inr(plan['total_invested'])}; {_inr(plan['leftover'])} left as cash "
+        f"(shares are bought whole). Prices as of {plan['data_as_of']}."
+    )
+    if beginner:
+        blocks.append(
+            "A share is a small slice of a company; the % is how much of your money goes to each. "
+            + BEGINNER_RISK_LINE
+        )
+        if plan["budget"] / max(1, len(plan["rows"])) < 5000:
+            blocks.append(
+                "Tip: with a small amount, one diversified index fund or ETF is usually simpler and cheaper."
+            )
+    blocks.extend(c for c in plan["caveats"] if c)
+    blocks.append(plan["disclaimer"])
+
+    chosen = {c.symbol: c for c in kept}
+    suggestions = list(FOLLOWUP_CHIPS)
+    if len(plan["rows"]) != 8:
+        suggestions.append("Make it 8 stocks")
+    return {
+        "text": "\n\n".join(blocks),
+        "needs_input": False,
+        "suggestions": suggestions,
+        "stock_plan": plan,
+        "sources": _sources(plan, chosen),
+        "plan_defaults": {"horizon_years": plan["horizon_years"], "risk_profile": plan["risk_profile"]},
+    }
