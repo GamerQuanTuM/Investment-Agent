@@ -32,6 +32,7 @@ from investment_agent.portfolio.fund_metrics import (
     sip_backtest,
     trailing_cagr,
 )
+from investment_agent.research.formatting import inr
 
 logger = logging.getLogger(__name__)
 
@@ -539,4 +540,121 @@ async def suggest_mix(
             "Up to five are shown. Expense ratio is not part of the ranking."
         ),
         "explanation": explanation,
+    }
+
+
+# --- One-time (lump sum) mix ----------------------------------------------------------
+
+_NON_EQUITY_GROUPS = ("debt", "gold")
+_LUMP_FUNDS_PER_CATEGORY = 3
+
+
+def spread_option(amount_inr: float, weights: dict[str, float]) -> dict[str, Any]:
+    """"Spread it over N months" alternative to investing a lump sum at once. The more
+    equity in the mix, the longer the suggested spread (12 months at 70%+ equity, 9 at 40%+,
+    otherwise 6). The monthly amount is plain division, computed here."""
+    equity_pct = sum(w for group, w in weights.items() if group not in _NON_EQUITY_GROUPS)
+    months = 12 if equity_pct >= 70 else 9 if equity_pct >= 40 else 6
+    return {
+        "months": months,
+        "monthly_inr": round(amount_inr / months, 2),
+        "equity_pct": equity_pct,
+        "note": (
+            f"Another option is to spread the {inr(amount_inr)} over {months} months "
+            f"(about {inr(round(amount_inr / months))} a month) through a SIP or an STP "
+            "(a systematic transfer out of a debt fund), so you don't put everything in on a "
+            "single day. It is an option to consider, not advice."
+        ),
+    }
+
+
+def _lump_sum_explanation(
+    amount_inr: float, horizon_years: int, risk_profile: str, sleeves: list[dict[str, Any]]
+) -> str:
+    kinds = [s["category_label"] for s in sleeves if s["status"] == "OK"]
+    if not kinds:
+        return (
+            f"No fund data was available to split {inr(amount_inr)} for a {horizon_years}-year "
+            "horizon right now, so I won't guess."
+        )
+    return (
+        f"This divides {inr(amount_inr)} between {len(kinds)} kinds of investment for a "
+        f"{horizon_years}-year horizon: {'; '.join(kinds)}. The split follows the {risk_profile} "
+        "profile, and each fund shown had the best recent return in its group. Past returns "
+        "don't guarantee future results."
+    )
+
+
+async def suggest_lump_sum(
+    amount_inr: float,
+    horizon_years: int,
+    risk_profile: str,
+    return_span: str = "quarter",
+) -> dict[str, Any]:
+    """One-time version of `suggest_mix`: the same deterministic category weights and fund
+    ranking, but the amount is invested once. Per fund: rupees of the lump sum, weight, units
+    at the latest NAV and 3y/5y annual returns when the history covers them. Also returns the
+    "spread it over N months" option (`spread_option`). All numbers computed in Python."""
+    span_key = return_span if return_span in RETURN_SPANS else "quarter"
+    span_length, span_label = RETURN_SPANS[span_key]
+    weights = _resolve_risk_weights(horizon_years, risk_profile)
+    ranked = await asyncio.gather(
+        *(_top_funds(group, span_length, limit=_LUMP_FUNDS_PER_CATEGORY) for group in weights)
+    )
+
+    sleeves: list[dict[str, Any]] = []
+    for (category, weight_pct), picks in zip(weights.items(), ranked, strict=True):
+        amount = round(amount_inr * weight_pct / 100.0, 2)
+        sleeve: dict[str, Any] = {
+            "category": category,
+            "category_label": CATEGORY_PLAIN_LABELS.get(category, category),
+            "weight_pct": weight_pct,
+            "amount_inr": amount,
+            "status": "OK" if picks else "DATA_UNAVAILABLE",
+            "scheme_code": None,
+            "scheme_name": None,
+            "funds": [],
+        }
+        for pick in picks:
+            nav_history = pick["history"]["nav_history"]
+            latest = nav_history[0]
+            latest_nav = float(latest["nav"])
+            sleeve["funds"].append(
+                {
+                    "scheme_code": pick["scheme"].scheme_code,
+                    "scheme_name": pick["scheme"].name,
+                    "amount_inr": amount,
+                    "weight_pct": weight_pct,
+                    "latest_nav": latest_nav,
+                    "nav_date": latest["date"],
+                    "units": round(amount / latest_nav, 3) if latest_nav > 0 else None,
+                    "return_3y_pct": trailing_cagr(nav_history, 3),
+                    "return_5y_pct": trailing_cagr(nav_history, 5),
+                    "recent_return_pct": pick["score"],
+                    "recent_return_window": span_label,
+                    "source_name": pick["history"].get("source_name") or "mfapi.in",
+                    "source_url": pick["history"].get("source_url") or "",
+                }
+            )
+        if sleeve["funds"]:
+            sleeve["scheme_code"] = sleeve["funds"][0]["scheme_code"]
+            sleeve["scheme_name"] = sleeve["funds"][0]["scheme_name"]
+        sleeves.append(sleeve)
+
+    allocated = round(sum(s["amount_inr"] for s in sleeves if s["status"] == "OK"), 2)
+    return {
+        "mode": "lump_sum",
+        "risk_profile": risk_profile,
+        "horizon_years": horizon_years,
+        "amount_inr": amount_inr,
+        "allocated_inr": allocated,
+        "unallocated_inr": round(amount_inr - allocated, 2),
+        "return_span_label": span_label,
+        "sleeves": sleeves,
+        "spread_option": spread_option(amount_inr, weights),
+        "note": (
+            f"The first fund in each group had the best Direct Growth return over {span_label}. "
+            "Units are at the latest published NAV; expense ratio is not part of the ranking."
+        ),
+        "explanation": _lump_sum_explanation(amount_inr, horizon_years, risk_profile, sleeves),
     }

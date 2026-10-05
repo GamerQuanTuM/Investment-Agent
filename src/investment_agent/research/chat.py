@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import UTC, datetime
 from typing import Any
 
 from investment_agent.market.universe import load_symbol_master
@@ -32,11 +33,14 @@ from investment_agent.research.chat_session import (
     reset_session,
     save_session,
 )
+from investment_agent.research.evidence import Evidence, SourceType
+from investment_agent.research.formatting import inr, normalize_money_text, pct
 from investment_agent.research.guidance import guide_symbol
 from investment_agent.research.sip import (
     CATEGORY_PLAIN_LABELS,
     build_etf_sip,
     rank_funds,
+    suggest_lump_sum,
     suggest_mix,
 )
 
@@ -46,6 +50,7 @@ DEFAULT_HORIZON_YEARS = 5
 DEFAULT_RISK_PROFILE = "moderate"
 
 FLOW_INTENTS = ("stock_list", "stock_single", "plan_sip_fund", "plan_sip_etf")
+SIP_FLOWS = ("plan_sip_fund", "plan_sip_etf")
 
 # Plain-language framing for both the risk question's answer and the fund categories
 # `suggest_mix` returns — a beginner should never see a bare "flexi cap"/"aggressive"
@@ -82,7 +87,9 @@ _QUESTION_CHIPS = {
     "horizon_years": ["3 years", "5 years", "10 years", "Not sure"],
     "amount": ["₹5,000", "₹10,000", "₹25,000"],
     "risk_profile": ["Play it safe", "Balanced mix", "Higher risk", "Not sure"],
+    "amount_kind": ["One-time amount", "Every month"],
 }
+_ASSUMPTION_CHIPS = ["What about 10 years?", "What about a safer mix?", "What about higher risk?"]
 
 
 # ------------------------------------------------------------------ response plumbing
@@ -91,11 +98,12 @@ _QUESTION_CHIPS = {
 def _collected_view(state: dict[str, Any]) -> dict[str, Any]:
     slots = state["slots"]
     flow = state.get("intent") or (state.get("last_result") or {}).get("intent")
-    monthly = slots.get("amount_inr") if slots.get("amount_kind") == "monthly" or flow in (
-        "plan_sip_fund",
-        "plan_sip_etf",
-        "stock_single",
-    ) else None
+    kind = slots.get("amount_kind")
+    monthly = (
+        slots.get("amount_inr")
+        if kind == "monthly" or (kind != "lump_sum" and flow in ("plan_sip_fund", "plan_sip_etf", "stock_single"))
+        else None
+    )
     return {
         "intent": flow,
         "symbol": slots.get("symbol"),
@@ -134,7 +142,9 @@ def _next_question(flow: str, slots: dict[str, Any]) -> tuple[str, str] | None:
                 "How much would you like to invest, in rupees? Just the number is fine, for example 10000.",
             )
         return None
-    if slots.get("horizon_years") is None:
+    sip_flow = flow in SIP_FLOWS
+    beginner_defaults = sip_flow and slots.get("experience_level") == "beginner"
+    if slots.get("horizon_years") is None and not beginner_defaults:
         return (
             "horizon_years",
             (
@@ -143,8 +153,27 @@ def _next_question(flow: str, slots: dict[str, Any]) -> tuple[str, str] | None:
             ),
         )
     if not slots.get("amount_inr"):
+        if sip_flow and slots.get("amount_kind") == "lump_sum":
+            return ("amount", "How much would you like to invest as a one-time amount, in rupees? For example 50000.")
+        if sip_flow:
+            return (
+                "amount",
+                (
+                    "How much would you like to invest every month, in rupees? Just the number is fine, "
+                    "for example 5000. (Investing a one-time amount instead? Say so, for example "
+                    "\"one-time 50000\".)"
+                ),
+            )
         return ("amount", "How much can you invest, in rupees? Just the number is fine, for example 5000.")
-    if flow != "stock_single" and slots.get("risk_profile") is None:
+    if sip_flow and slots.get("amount_kind") is None:
+        return (
+            "amount_kind",
+            (
+                f"Is {inr(slots['amount_inr'])} a one-time amount you want to invest now, "
+                "or an amount you'll invest every month?"
+            ),
+        )
+    if flow != "stock_single" and slots.get("risk_profile") is None and not beginner_defaults:
         return (
             "risk_profile",
             (
@@ -175,10 +204,15 @@ def _unclear_reply(ex: Extraction) -> dict[str, Any]:
 
 def _unclear_chips(ex: Extraction) -> list[str]:
     amount = ex.slots.amount_inr
-    shown = f"₹{amount:,.0f}" if amount else "₹10,000"
+    shown = inr(amount) if amount else "₹10,000"
+    plan_chip = (
+        f"Invest {shown} one-time in mutual funds"
+        if ex.slots.amount_kind == "lump_sum"
+        else f"Plan a {shown} monthly SIP"
+    )
     return [
         f"Suggest 10 stocks for {shown}",
-        f"Plan a {shown} monthly SIP",
+        plan_chip,
         "What is an ETF?",
         "How is the market today?",
     ]
@@ -248,53 +282,232 @@ async def _ranked_funds_reply(state: dict[str, Any]) -> dict[str, Any]:
     return _body(text, ranking=rows)
 
 
+def _is_lump(slots: dict[str, Any]) -> bool:
+    return slots.get("amount_kind") == "lump_sum"
+
+
+def _assume_beginner_defaults(slots: dict[str, Any]) -> list[str]:
+    """A beginner who has not answered horizon/risk gets the safe defaults instead of two more
+    questions. Returns what was assumed so the reply can say so."""
+    assumed: list[str] = []
+    if slots.get("experience_level") != "beginner":
+        return assumed
+    if slots.get("horizon_years") is None:
+        slots["horizon_years"] = DEFAULT_HORIZON_YEARS
+        assumed.append(f"{DEFAULT_HORIZON_YEARS} years")
+    if slots.get("risk_profile") is None:
+        slots["risk_profile"] = DEFAULT_RISK_PROFILE
+        assumed.append("a balanced mix")
+    return assumed
+
+
+def _assumption_note(assumed: list[str]) -> str:
+    return (
+        f"Since you're new, I assumed {' and '.join(assumed)} to get you started. "
+        "Tap an option below to change it."
+    )
+
+
+def _assumed_extra(assumed: list[str], slots: dict[str, Any]) -> dict[str, Any]:
+    if not assumed:
+        return {}
+    return {
+        "assumed": {"horizon_years": slots["horizon_years"], "risk_profile": slots["risk_profile"]},
+    }
+
+
+def _fund_sources(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One source chip per shown fund (max 4): AMFI NAV data via mfapi.in, with the NAV date."""
+    sources: list[dict[str, Any]] = []
+    for row in rows:
+        if not row.get("scheme_name") or len(sources) >= 4:
+            continue
+        nav_date = row.get("nav_date")
+        sources.append(
+            Evidence(
+                claim=f"NAV and returns for {row['scheme_name']}",
+                source_name="mfapi.in (AMFI NAV data)",
+                source_url=row.get("source_url") or "https://api.mfapi.in",
+                source_type=SourceType.MFAPI,
+                data_date=datetime.fromisoformat(nav_date).replace(tzinfo=UTC) if nav_date else None,
+            ).model_dump(mode="json")
+        )
+    return sources
+
+
+def _sleeve_label(category: str, plain: str | None, scheme_name: str | None) -> str:
+    """"large, well-established companies — <fund name>", or an honest note when no fund exists.
+    (Explicit variables: the old one-liner let `or` bind looser than `+`, dropping the name.)"""
+    category_text = plain or CATEGORY_PLAIN_LABELS.get(category, category)
+    if scheme_name:
+        return f"{category_text} — {scheme_name}"
+    return f"{category_text} (no fund matched, data unavailable)"
+
+
+def _return_suffix(three_year: float | None, five_year: float | None) -> str:
+    parts = []
+    if three_year is not None:
+        parts.append(f"3y {pct(three_year)} a year")
+    if five_year is not None:
+        parts.append(f"5y {pct(five_year)} a year")
+    return f" · {', '.join(parts)}" if parts else ""
+
+
 async def _etf_plan_reply(state: dict[str, Any]) -> dict[str, Any]:
     slots = state["slots"]
+    assumed = _assume_beginner_defaults(slots)
     cap_style = _RISK_TO_ETF_CAP_STYLE.get(slots["risk_profile"], "flexi")
     plan = await build_etf_sip(float(slots["amount_inr"]), int(slots["horizon_years"]), cap_style)
-    lines = [
-        f"{row['label']} ({row['symbol']}): ₹{row['monthly_inr']:,.0f} ({row['weight_pct']}%)"
-        for row in plan["sleeves"]
-    ]
-    text = (
-        f"For ₹{plan['monthly_amount']:,.0f} a month over {plan['horizon_years']} years, here's a starting ETF mix "
-        "(bought through your broker — a different mechanism from a mutual fund SIP):\n"
-        + "\n".join(lines)
-        + f"\n{plan['note']}"
+    if _is_lump(slots):
+        for row in plan["sleeves"]:
+            row["amount_inr"] = row.pop("monthly_inr")
+        plan["amount_inr"] = plan.pop("monthly_amount")
+        plan["kind"] = "lump_sum"
+        plan["title"] = f"{inr(plan['amount_inr'])} one-time"
+        lines = [
+            f"{row['label']} ({row['symbol']}): {inr(row['amount_inr'])} ({pct(row['weight_pct'])})"
+            for row in plan["sleeves"]
+        ]
+        intro = (
+            f"For {inr(plan['amount_inr'])} one-time over {plan['horizon_years']} years, here's a starting "
+            "ETF mix (bought through your broker, a different mechanism from a mutual fund):\n"
+        )
+    else:
+        plan["kind"] = "monthly"
+        plan["title"] = f"{inr(plan['monthly_amount'])}/month"
+        lines = [
+            f"{row['label']} ({row['symbol']}): {inr(row['monthly_inr'])} ({pct(row['weight_pct'])})"
+            for row in plan["sleeves"]
+        ]
+        intro = (
+            f"For {inr(plan['monthly_amount'])} a month over {plan['horizon_years']} years, here's a starting "
+            "ETF mix (bought through your broker — a different mechanism from a mutual fund SIP):\n"
+        )
+    text = intro + "\n".join(lines) + f"\n{plan['note']}"
+    if assumed:
+        text = f"{_assumption_note(assumed)}\n\n{text}"
+    return _body(
+        text,
+        plan=plan,
+        suggestions=list(_ASSUMPTION_CHIPS) if assumed else [],
+        **_assumed_extra(assumed, slots),
     )
-    return _body(text, plan=plan)
+
+
+async def _lump_sum_fund_reply(state: dict[str, Any]) -> dict[str, Any]:
+    """One-time amount: real mutual funds per category, in rupees (not a monthly SIP)."""
+    slots = state["slots"]
+    assumed = _assume_beginner_defaults(slots)
+    amount = float(slots["amount_inr"])
+    result = await suggest_lump_sum(amount, int(slots["horizon_years"]), slots["risk_profile"])
+    rows: list[dict[str, Any]] = []
+    for sleeve in result["sleeves"]:
+        top = sleeve["funds"][0] if sleeve["funds"] else {}
+        rows.append(
+            {
+                "symbol": sleeve.get("scheme_code") or sleeve["category"],
+                "label": _sleeve_label(sleeve["category"], sleeve.get("category_label"), sleeve.get("scheme_name")),
+                "category": sleeve["category"],
+                "scheme_name": sleeve.get("scheme_name"),
+                "weight_pct": sleeve["weight_pct"],
+                "amount_inr": sleeve["amount_inr"],
+                "units": top.get("units"),
+                "latest_nav": top.get("latest_nav"),
+                "nav_date": top.get("nav_date"),
+                "return_3y_pct": top.get("return_3y_pct"),
+                "return_5y_pct": top.get("return_5y_pct"),
+                "source_url": top.get("source_url"),
+            }
+        )
+    risk_label = _RISK_PLAIN_LABELS.get(result["risk_profile"], result["risk_profile"])
+    plan = {
+        "kind": "lump_sum",
+        "title": f"{inr(amount)} one-time",
+        "style": risk_label,
+        "requested_style": result["risk_profile"],
+        "horizon_years": result["horizon_years"],
+        "amount_inr": amount,
+        "note": result["note"],
+        "sleeves": rows,
+        "spread_option": result["spread_option"],
+    }
+    lines = []
+    for row in rows:
+        line = f"{row['label']}: {inr(row['amount_inr'])} ({pct(row['weight_pct'])})"
+        if row["scheme_name"]:
+            line += _return_suffix(row["return_3y_pct"], row["return_5y_pct"])
+            if row["units"] is not None and row["latest_nav"] is not None:
+                line += f" · about {row['units']:,.3f} units at NAV {inr(row['latest_nav'])} ({row['nav_date']})"
+        lines.append(line)
+    text = (
+        f"For {inr(amount)} one-time over {result['horizon_years']} years, going with {risk_label}, "
+        "here's a mutual fund mix:\n"
+        + "\n".join(lines)
+        + f"\n\n{result['spread_option']['note']}"
+        + f"\n\n{normalize_money_text(result['explanation'])}\n{result['note']}"
+    )
+    if assumed:
+        text = f"{_assumption_note(assumed)}\n\n{text}"
+    suggestions = [*(_ASSUMPTION_CHIPS if assumed else []), "What is NAV?"]
+    return _body(
+        text,
+        plan=plan,
+        sources=_fund_sources(rows),
+        suggestions=suggestions,
+        **_assumed_extra(assumed, slots),
+    )
 
 
 async def _fund_plan_reply(state: dict[str, Any]) -> dict[str, Any]:
-    """Default SIP path: real mutual funds (`suggest_mix`), not ETFs."""
+    """Default SIP path: real mutual funds (`suggest_mix`), not ETFs. A one-time amount gets its
+    own lump-sum plan instead of being passed off as a monthly SIP."""
+    if _is_lump(state["slots"]):
+        return await _lump_sum_fund_reply(state)
     slots = state["slots"]
+    assumed = _assume_beginner_defaults(slots)
     result = await suggest_mix(slots["amount_inr"], slots["horizon_years"], slots["risk_profile"])
-    sleeves = [
-        {
-            "symbol": sleeve.get("scheme_code") or "—",
-            "label": sleeve.get("category_label") or CATEGORY_PLAIN_LABELS.get(sleeve["category"], sleeve["category"])
-            + (f" — {sleeve['scheme_name']}" if sleeve.get("scheme_name") else " (no specific fund matched yet)"),
-            "weight_pct": sleeve["weight_pct"],
-            "monthly_inr": sleeve["monthly_inr"],
-        }
-        for sleeve in result["sleeves"]
-    ]
+    sleeves = []
+    for sleeve in result["sleeves"]:
+        sleeves.append(
+            {
+                "symbol": sleeve.get("scheme_code") or "—",
+                "label": _sleeve_label(sleeve["category"], sleeve.get("category_label"), sleeve.get("scheme_name")),
+                "scheme_name": sleeve.get("scheme_name"),
+                "weight_pct": sleeve["weight_pct"],
+                "monthly_inr": sleeve["monthly_inr"],
+                "return_pct": sleeve.get("trailing_return_pct_used"),
+                "return_window": sleeve.get("return_window"),
+            }
+        )
+    risk_label = _RISK_PLAIN_LABELS.get(result["risk_profile"], result["risk_profile"])
     plan = {
-        "style": _RISK_PLAIN_LABELS.get(result["risk_profile"], result["risk_profile"]),
+        "kind": "monthly",
+        "title": f"{inr(result['monthly_amount'])}/month",
+        "style": risk_label,
         "requested_style": result["risk_profile"],
         "horizon_years": result["horizon_years"],
         "monthly_amount": result["monthly_amount"],
         "note": result["note"],
         "sleeves": sleeves,
     }
-    risk_label = _RISK_PLAIN_LABELS.get(result["risk_profile"], result["risk_profile"])
+    lines = []
+    for row in sleeves:
+        line = f"{row['label']}: {inr(row['monthly_inr'])} ({pct(row['weight_pct'])})"
+        if row["scheme_name"] and row["return_pct"] is not None and row["return_window"]:
+            line += f" · {pct(row['return_pct'])} over {row['return_window']}"
+        lines.append(line)
     text = (
-        f"For ₹{result['monthly_amount']:,.0f}/month over {result['horizon_years']} years, going with {risk_label}, "
+        f"For {inr(result['monthly_amount'])}/month over {result['horizon_years']} years, going with {risk_label}, "
         "here's a mutual fund mix:\n"
-        + "\n".join(f"{row['label']}: ₹{row['monthly_inr']:,.0f} ({row['weight_pct']}%)" for row in sleeves)
-        + f"\n\n{result['explanation']}"
+        + "\n".join(lines)
+        + f"\n\n{normalize_money_text(result['explanation'])}"
     )
-    return _body(text, plan=plan)
+    if assumed:
+        text = f"{_assumption_note(assumed)}\n\n{text}"
+    extra: dict[str, Any] = _assumed_extra(assumed, slots)
+    if any(row["scheme_name"] for row in sleeves):
+        extra["sources"] = _fund_sources(sleeves)
+    return _body(text, plan=plan, suggestions=list(_ASSUMPTION_CHIPS) if assumed else [], **extra)
 
 
 # ---------------------------------------------------------------------------- engine
@@ -324,7 +537,11 @@ def _start_flow(state: dict[str, Any], ex: Extraction) -> None:
 def _apply_slots(state: dict[str, Any], ex: Extraction) -> None:
     provided = ex.slots.provided()
     provided.pop("concept", None)
+    # A bare number typed in answer to "how much every month?" is the monthly amount.
+    answering_monthly = state.get("last_asked") == "amount" and state.get("intent") in SIP_FLOWS
     state["slots"].update(provided)
+    if answering_monthly and "amount_inr" in provided and not state["slots"].get("amount_kind"):
+        state["slots"]["amount_kind"] = "monthly"
 
 
 async def _run_flow(

@@ -27,6 +27,7 @@ from investment_agent.portfolio.stock_picker import (
     pick_filters,
 )
 from investment_agent.research.evidence import Evidence, SourceType
+from investment_agent.research.formatting import inr
 from investment_agent.research.llm_guard import is_grounded
 
 logger = logging.getLogger(__name__)
@@ -76,15 +77,11 @@ async def _eligible_candidates() -> tuple[list[Candidate], dict[str, int], str |
     return kept, excluded, None if kept else "unreachable"
 
 
-def _inr(value: float) -> str:
-    return f"₹{value:,.0f}"
-
-
 def template_summary(plan: dict[str, Any], *, monthly: bool) -> str:
     n = len(plan["rows"])
     per = " a month" if monthly else ""
     return (
-        f"Here are {n} stocks for your {_inr(plan['budget'])}{per}, picked by past quality, valuation, "
+        f"Here are {n} stocks for your {inr(plan['budget'])}{per}, picked by past quality, valuation, "
         "price trend and steadiness, with no more than two from any one sector. "
         "These describe the past, not a forecast."
     )
@@ -138,7 +135,7 @@ def render_rows(plan: dict[str, Any], *, beginner: bool) -> str:
     for i, r in enumerate(plan["rows"], start=1):
         line = (
             f"{i}. {r['symbol']} ({r['sector']}): {r['shares']} share{'s' if r['shares'] != 1 else ''} "
-            f"at {_inr(r['price'])} = {_inr(r['amount_inr'])} ({r['weight_pct']}%)"
+            f"at {inr(r['price'])} = {inr(r['amount_inr'])} ({r['weight_pct']}%)"
         )
         if not beginner and r["why"]:
             line += f" — {r['why'][0]}"
@@ -203,7 +200,7 @@ async def stock_list_reply(slots: dict[str, Any]) -> dict[str, Any]:
     intro = await narrate(plan, monthly=monthly)
     blocks = [intro, render_rows(plan, beginner=beginner)]
     blocks.append(
-        f"Invested {_inr(plan['total_invested'])}; {_inr(plan['leftover'])} left as cash "
+        f"Invested {inr(plan['total_invested'])}; {inr(plan['leftover'])} left as cash "
         f"(shares are bought whole). Prices as of {plan['data_as_of']}."
     )
     if beginner:

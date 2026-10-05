@@ -115,6 +115,31 @@ after each close. A sync runs `refresh_market_data()` (watchlist fundamentals, A
 INDstocks bars when configured) and the live universe refresh. `GET /market/status` reports
 `last_sync_at`, `rows` per table, `sync_in_progress` and `last_sync_error`.
 
+## One-time vs monthly amounts, and fund plans
+
+The amount's kind is never assumed (`chat_intent._amount_kind`). "per month", "every month",
+"monthly" and "SIP of X" mean monthly; "lump sum", "one-time", "capital", "savings", "corpus",
+"bonus", "I have X" and "invest X now" mean one-time; a bare "SIP" means monthly. If a fund or
+ETF plan has an amount but no kind (for example "invest 20000"), the chat asks one question with
+the chips **One-time amount** / **Every month** before building anything. A bare number typed in
+answer to "how much every month?" is monthly.
+
+- **Monthly** goes to `suggest_mix` (unchanged). Each category line shows the top fund's name,
+  rupees a month, weight and its return over the ranking window, plus a source chip per fund.
+- **One-time** goes to `suggest_lump_sum` (`research/sip.py`): the same category weights and
+  fund ranking, but per fund it returns rupees of the lump sum, weight, units at the latest NAV
+  and 3-year / 5-year annual returns when the history covers them. It also returns
+  `spread_option`: invest over 6, 9 or 12 months (12 at 70%+ equity, 9 at 40%+, else 6) with the
+  monthly amount computed in Python, presented as an option, not advice. Titles say
+  "₹50,000 one-time", never "/month"; a category with no scorable fund says "no fund matched,
+  data unavailable" instead of naming one.
+- **Beginners** are not asked horizon and risk for a fund/ETF plan: the reply states the defaults
+  it assumed (5 years, balanced) and offers "What about 10 years?" / "What about a safer mix?" /
+  "What about higher risk?" chips to change them.
+- **Money text** everywhere uses `research/formatting.py`: `inr()` gives ₹20,000 / ₹1,00,000 (Indian
+  grouping, no ".0", no "INR"), `pct()` gives 12.5% / 40%, and `normalize_money_text()` rewrites
+  amounts inside model-written paragraphs the same way.
+
 ## Education
 
 Fixed, reviewed definitions in `research/glossary.py` (ETF, SIP, mutual fund, NAV, expense
@@ -137,7 +162,9 @@ user then gets the list of terms we can explain.
   "sources": [ /* Evidence: claim, source_name, source_url, source_type, data_date */ ],
   "stock_plan": { "rows": [], "total_invested": 0, "leftover": 0, "data_as_of": "YYYY-MM-DD",
                   "caveats": [], "reality_check": "…", "sector_split": [], "disclaimer": "…" },
-  "plan": {}, "guidance": {}, "ranking": [], "glossary": { "term", "definition", "example" },
+  "plan": { "kind": "monthly" | "lump_sum", "title": "₹50,000 one-time", "sleeves": [], "spread_option": {} },
+  "assumed": { "horizon_years": 5, "risk_profile": "moderate" },   // only when defaults were assumed
+  "guidance": {}, "ranking": [], "glossary": { "term", "definition", "example" },
   "data_status": "LOADING" | "DATA_UNAVAILABLE"   // only when data is loading / missing
 }
 ```

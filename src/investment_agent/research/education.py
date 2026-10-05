@@ -16,6 +16,7 @@ from typing import Any
 
 from investment_agent.llm.factory import extract_text, get_llm
 from investment_agent.research.evidence import Evidence, SourceType
+from investment_agent.research.formatting import inr
 from investment_agent.research.glossary import GLOSSARY, GlossaryEntry, entry_by_term, find_term
 
 logger = logging.getLogger(__name__)
@@ -68,7 +69,7 @@ def passes_education_check(text: str) -> bool:
 
 def next_step_chip(term: str | None, amount_inr: float | None) -> str:
     if amount_inr:
-        shown = f"₹{amount_inr:,.0f}"
+        shown = inr(amount_inr)
         if term in NEXT_STEP_BY_TERM:
             return f"Plan a {shown} monthly SIP"
         return f"Suggest 10 stocks for {shown}"

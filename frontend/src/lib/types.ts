@@ -463,15 +463,30 @@ export interface ChatReply {
   collected: ChatCollected;
   suggestions: string[];
   sources: EvidenceItem[];
-  data_status?: "DATA_UNAVAILABLE";
+  data_status?: "DATA_UNAVAILABLE" | "LOADING";
+  assumed?: { horizon_years: number; risk_profile: string };
   stock_plan?: StockPlan | null;
   glossary?: GlossaryEntry;
   guidance?: GuidanceNote;
   plan?: {
+    kind?: "monthly" | "lump_sum";
+    title?: string;
     style: string;
     horizon_years: number;
-    monthly_amount: number;
+    monthly_amount?: number;
+    amount_inr?: number;
     note: string;
-    sleeves: { symbol: string; label: string; weight_pct: number; monthly_inr: number }[];
+    sleeves: {
+      symbol: string;
+      label: string;
+      weight_pct: number;
+      monthly_inr?: number;
+      amount_inr?: number;
+      scheme_name?: string | null;
+      units?: number | null;
+      return_3y_pct?: number | null;
+      return_5y_pct?: number | null;
+    }[];
+    spread_option?: { months: number; monthly_inr: number; note: string };
   };
 }

@@ -114,14 +114,36 @@ function GuidanceCard({ guidance }: { guidance: GuidanceNote }) {
 }
 
 function PlanCard({ plan }: { plan: Plan }) {
+  const lump = plan.kind === "lump_sum";
   return (
     <div className="mt-2 space-y-1.5 rounded-xl border border-(--border-subtle) bg-(--surface-1) p-3">
-      {plan.sleeves.map((row) => (
-        <div key={row.symbol} className="flex items-center justify-between text-xs">
-          <span className="font-semibold text-(--text-primary)">{row.label}</span>
-          <span className="num-tabular font-semibold text-(--section-sip)">₹{row.monthly_inr.toLocaleString("en-IN")} · {row.weight_pct}%</span>
-        </div>
-      ))}
+      {plan.title && (
+        <p className="mb-1 text-[11px] font-bold uppercase tracking-wide text-(--text-muted)">{plan.title}</p>
+      )}
+      {plan.sleeves.map((row, index) => {
+        const rupees = lump ? row.amount_inr : row.monthly_inr;
+        const returns = [
+          row.return_3y_pct != null ? `3y ${row.return_3y_pct}%/yr` : null,
+          row.return_5y_pct != null ? `5y ${row.return_5y_pct}%/yr` : null,
+        ].filter(Boolean);
+        return (
+          <div key={`${row.symbol}-${index}`} className="flex items-start justify-between gap-3 text-xs">
+            <span className="min-w-0">
+              <span className="font-semibold text-(--text-primary)">{row.label}</span>
+              {returns.length > 0 && <span className="block text-[11px] text-(--text-muted)">{returns.join(" · ")}</span>}
+            </span>
+            <span className="num-tabular shrink-0 font-semibold text-(--section-sip)">
+              {rupees != null ? `₹${rupees.toLocaleString("en-IN")}` : "—"} · {row.weight_pct}%
+            </span>
+          </div>
+        );
+      })}
+      {plan.spread_option && (
+        <p className="border-t border-(--border-subtle) pt-1.5 text-[11px] text-(--text-secondary)">
+          Or spread over {plan.spread_option.months} months: about ₹
+          {Math.round(plan.spread_option.monthly_inr).toLocaleString("en-IN")} a month.
+        </p>
+      )}
     </div>
   );
 }

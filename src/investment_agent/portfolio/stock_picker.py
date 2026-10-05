@@ -40,6 +40,7 @@ from investment_agent.portfolio.calculations import (
     calculate_return_pct,
 )
 from investment_agent.portfolio.scoring import build_score_card
+from investment_agent.research.formatting import inr
 
 logger = logging.getLogger(__name__)
 
@@ -296,8 +297,8 @@ def reality_check(budget: float, rows: list[dict[str, Any]], leftover: float) ->
     if average >= SMALL_POSITION_INR:
         return None
     return (
-        f"Reality check: ₹{budget:,.0f} split across {len(rows)} stocks is only about "
-        f"₹{average:,.0f} per stock. Shares are bought whole, so ₹{leftover:,.0f} stays unused after "
+        f"Reality check: {inr(budget)} split across {len(rows)} stocks is only about "
+        f"{inr(average)} per stock. Shares are bought whole, so {inr(leftover)} stays unused after "
         "rounding. Brokerage and demat (DP) charges are charged per trade, so they weigh much "
         "more on small positions. For a small amount, one diversified index fund or ETF "
         "SIP often does the same spreading job at lower cost."
@@ -363,7 +364,7 @@ def build_stock_plan(
             "status": "DATA_UNAVAILABLE",
             "reason": "unaffordable",
             "message": (
-                f"With ₹{budget:,.0f} I couldn't fit even {MIN_STOCKS} diversified whole shares "
+                f"With {inr(budget)} I couldn't fit even {MIN_STOCKS} diversified whole shares "
                 "from the stocks that passed the data checks. A larger amount, or an index fund "
                 "SIP, would work better."
             ),

@@ -291,7 +291,9 @@ def _parse_amount(message: str, last_asked: str | None) -> float | None:
                 return value
     asked = last_asked in ("amount", "monthly_amount")
     lowered = message.lower()
-    investing = any(w in lowered for w in ("invest", "budget", "have", "save", "afford", "put"))
+    investing = any(
+        w in lowered for w in ("invest", "budget", "have", "save", "afford", "put", "sip", "per month", "monthly")
+    )
     if not asked and not investing:
         return None
     for match in _BARE_AMOUNT.finditer(message):
@@ -315,6 +317,35 @@ def _parse_count(message: str) -> tuple[int | None, int | None]:
     return None, None
 
 
+_MONTHLY_RE = re.compile(
+    r"\b(per\s+month|a\s+month|monthly|every\s+month|each\s+month|/\s*month|sip\s+of|monthly\s+sip)\b"
+)
+_LUMP_RE = re.compile(
+    r"\b(lump\s*sum|one[- ]?time|at\s+once|in\s+one\s+go|single\s+investment|capital|corpus|savings?|"
+    r"bonus|windfall|inheritance)\b"
+)
+_I_HAVE_RE = re.compile(r"\bi\s*(?:have|got|saved|received|am\s+holding)\b|\bi've\b")
+_INVEST_NOW_RE = re.compile(r"\binvest\w*\b[^.?!]{0,40}\bnow\b|\bright\s+now\b")
+
+
+def _amount_kind(text: str, *, has_amount: bool, last_asked: str | None) -> str | None:
+    """One-time vs every month. Never assumed: explicit "per month"/"SIP of" wins, then
+    capital/savings/corpus/lump-sum/bonus/"I have X"/"invest X now" wording means one-time,
+    and a bare "SIP" means monthly. Anything else stays None so the chat asks."""
+    if _MONTHLY_RE.search(text):
+        return "monthly"
+    if _LUMP_RE.search(text) or (has_amount and (_I_HAVE_RE.search(text) or _INVEST_NOW_RE.search(text))):
+        return "lump_sum"
+    if re.search(r"\bsips?\b", text):
+        return "monthly"
+    if last_asked == "amount_kind":
+        if re.search(r"\b(once|now|lump|one|single|all\s+at)\b", text):
+            return "lump_sum"
+        if re.search(r"\b(month|monthly|regular|sip)\w*\b", text):
+            return "monthly"
+    return None
+
+
 def extract_slots(message: str, last_asked: str | None = None) -> Slots:
     """Deterministic slot filling. Every number is read from the user's own text."""
     text = message.lower().strip()
@@ -324,10 +355,9 @@ def extract_slots(message: str, last_asked: str | None = None) -> Slots:
     amount = _parse_amount(message, last_asked)
     if amount:
         values["amount_inr"] = amount
-    if re.search(r"\b(per\s+month|a\s+month|monthly|every\s+month|each\s+month|/\s*month|sip)\b", text):
-        values["amount_kind"] = "monthly"
-    elif re.search(r"\b(lump\s*sum|one[- ]time|at\s+once|in\s+one\s+go|single\s+investment)\b", text):
-        values["amount_kind"] = "lump_sum"
+    kind = _amount_kind(text, has_amount=bool(amount), last_asked=last_asked)
+    if kind:
+        values["amount_kind"] = kind
 
     count, count_min = _parse_count(message)
     if count:
