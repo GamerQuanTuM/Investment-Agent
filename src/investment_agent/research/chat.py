@@ -1,15 +1,19 @@
 """Chat that works for a total beginner and an experienced investor alike.
 
-Every question is phrased so someone who has never invested before can answer it without
-already knowing the jargon: no bare "cap style?" prompt, every question accepts "I don't
-know"/"not sure" with a stated, sensible default, and a terse numeric reply (just "5",
-just "5000") is read in context of whichever question was just asked rather than
-requiring the exact phrasing ("5 years", "₹5000/month") a beginner may not think to use.
+`chat_turn` is a small state machine around three pieces:
 
-Routes a monthly-investment request to `suggest_mix` (real mutual funds, Workstream B) by
-default — only an explicit "ETF" mention goes to the older `build_etf_sip`. An earlier
-version of this module only knew about ETFs at all, which meant a user who typed "which
-mutual funds should I invest in" got ETF jargon back; this fixes that mismatch.
+- `chat_intent.extract` turns the message into a validated intent + slots in one pass, so a
+  message that already says "10-12 stocks for 10000 rupees" fills every slot at once and is
+  never re-asked for what it gave. Symbols only ever come from the real security master.
+- `chat_session` keeps the conversation (slots, pending question, last finished plan, last 6
+  turns) in Redis with an in-memory fallback, so "make it 8 stocks" or "what about safer
+  ones?" modifies the previous plan instead of restarting.
+- One handler per intent. Every number a handler returns is computed in Python; models may
+  only phrase or explain what the code already produced.
+
+Every question accepts "I don't know" with a stated default and comes with quick-reply chips
+(`suggestions`), and a terse numeric reply ("5", "5000") is read in the context of the
+question that was just asked.
 """
 
 from __future__ import annotations
@@ -18,7 +22,15 @@ import logging
 import re
 from typing import Any
 
-from investment_agent.llm.factory import extract_text, get_llm
+from investment_agent.market.universe import load_symbol_master
+from investment_agent.research.chat_intent import Extraction, extract, search_universe
+from investment_agent.research.chat_session import (
+    add_turn,
+    load_session,
+    new_state,
+    reset_session,
+    save_session,
+)
 from investment_agent.research.guidance import guide_symbol
 from investment_agent.research.sip import (
     CATEGORY_PLAIN_LABELS,
@@ -29,22 +41,10 @@ from investment_agent.research.sip import (
 
 logger = logging.getLogger(__name__)
 
-_sessions: dict[str, dict[str, Any]] = {}
-
 DEFAULT_HORIZON_YEARS = 5
 DEFAULT_RISK_PROFILE = "moderate"
 
-_UNCERTAIN_PHRASES = (
-    "don't know",
-    "dont know",
-    "not sure",
-    "no idea",
-    "unsure",
-    "whatever",
-    "you decide",
-    "you choose",
-    "no clue",
-)
+FLOW_INTENTS = ("stock_list", "stock_single", "plan_sip_fund", "plan_sip_etf")
 
 # Plain-language framing for both the risk question's answer and the fund categories
 # `suggest_mix` returns — a beginner should never see a bare "flexi cap"/"aggressive"
@@ -56,84 +56,83 @@ _RISK_PLAIN_LABELS = {
 }
 _RISK_TO_ETF_CAP_STYLE = {"conservative": "large", "moderate": "flexi", "aggressive": "small"}
 
+_RESET_RE = re.compile(r"\b(start\s+over|start\s+again|reset|new\s+chat|clear\s+chat)\b", re.IGNORECASE)
 
-def _state(session_id: str) -> dict[str, Any]:
-    if session_id not in _sessions:
-        _sessions[session_id] = {
-            "intent": None,  # "sip_fund" | "sip_etf" | "stock"
-            "symbol": None,
-            "horizon_years": None,
-            "monthly_amount": None,
-            "risk_profile": None,  # "conservative" | "moderate" | "aggressive"
-            "last_asked": None,
-        }
-    return _sessions[session_id]
+OFF_TOPIC_MESSAGE = (
+    "I can only help with the Indian stock market, mutual funds, SIPs and ETFs. "
+    "That question doesn't look related — try one of the questions below."
+)
 
+STARTER_SUGGESTIONS = [
+    "I'm new, where do I start?",
+    "Suggest 10 stocks for ₹10,000",
+    "What is an ETF?",
+    "Plan a ₹5,000 monthly SIP",
+]
+OFF_TOPIC_SUGGESTIONS = [
+    "Should I buy TCS for 5 years?",
+    "What is a mutual fund?",
+    "Plan a ₹5,000 monthly SIP",
+]
+_WELL_KNOWN_SYMBOLS = ("RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "ITC")
 
-def _is_uncertain(text: str) -> bool:
-    return any(phrase in text for phrase in _UNCERTAIN_PHRASES)
-
-
-def _absorb(state: dict[str, Any], message: str, last_asked: str | None) -> None:
-    text = message.lower().strip()
-    uncertain = _is_uncertain(text)
-
-    if state["intent"] is None:
-        if "etf" in text:
-            state["intent"] = "sip_etf"
-        elif any(w in text for w in ("mutual fund", "sip", "monthly", "systematic")):
-            state["intent"] = "sip_fund"
-        elif any(w in text for w in ("stock", "share", "buy one", "one company")):
-            state["intent"] = "stock"
-
-    symbol_match = re.search(r"\b([A-Z]{2,12})\b", message)
-    if symbol_match and symbol_match.group(1) not in {"SIP", "ETF", "NSE", "BSE", "AI"} and state["intent"] is None:
-        state["symbol"] = symbol_match.group(1)
-        state["intent"] = "stock"
-    elif symbol_match and state["intent"] == "stock" and not state["symbol"]:
-        if symbol_match.group(1) not in {"SIP", "ETF", "NSE", "BSE", "AI"}:
-            state["symbol"] = symbol_match.group(1)
-
-    years_match = re.search(r"(\d+)\s*(?:year|yr)", text)
-    if years_match:
-        state["horizon_years"] = int(years_match.group(1))
-    elif last_asked == "horizon_years":
-        bare_number = re.search(r"^\D*(\d{1,2})\D*$", text)
-        if bare_number:
-            state["horizon_years"] = int(bare_number.group(1))
-        elif uncertain:
-            state["horizon_years"] = DEFAULT_HORIZON_YEARS
-
-    amount_match = re.search(r"(?:₹|rs\.?|inr)?\s*(\d{3,7})", message, re.IGNORECASE)
-    if amount_match and any(w in text for w in ("month", "sip", "budget", "invest", "rs", "₹", "rupee")) or last_asked == "monthly_amount" and amount_match:
-        state["monthly_amount"] = float(amount_match.group(1))
-
-    if any(w in text for w in ("safe", "steady", "low risk", "conservative", "play it safe")) or text in ("a", "1"):
-        state["risk_profile"] = "conservative"
-    elif any(w in text for w in ("balanced", "moderate", "medium risk", "flexi", "large cap")) or text in ("b", "2"):
-        state["risk_profile"] = "moderate"
-    elif any(w in text for w in ("aggressive", "high risk", "big swings", "small cap", "mid cap", "growth")) or text in (
-        "c",
-        "3",
-    ):
-        state["risk_profile"] = "aggressive"
-    elif last_asked == "risk_profile" and uncertain:
-        state["risk_profile"] = DEFAULT_RISK_PROFILE
+_QUESTION_CHIPS = {
+    "horizon_years": ["3 years", "5 years", "10 years", "Not sure"],
+    "amount": ["₹5,000", "₹10,000", "₹25,000"],
+    "risk_profile": ["Play it safe", "Balanced mix", "Higher risk", "Not sure"],
+}
 
 
-def _next_question(state: dict[str, Any]) -> tuple[str, str] | None:
-    if not state["intent"]:
+# ------------------------------------------------------------------ response plumbing
+
+
+def _collected_view(state: dict[str, Any]) -> dict[str, Any]:
+    slots = state["slots"]
+    flow = state.get("intent") or (state.get("last_result") or {}).get("intent")
+    monthly = slots.get("amount_inr") if slots.get("amount_kind") == "monthly" or flow in (
+        "plan_sip_fund",
+        "plan_sip_etf",
+        "stock_single",
+    ) else None
+    return {
+        "intent": flow,
+        "symbol": slots.get("symbol"),
+        "horizon_years": slots.get("horizon_years"),
+        "monthly_amount": monthly,
+        "amount_inr": slots.get("amount_inr"),
+        "amount_kind": slots.get("amount_kind"),
+        "risk": slots.get("risk_profile"),
+        "stock_count": slots.get("stock_count"),
+        "experience_level": slots.get("experience_level"),
+    }
+
+
+def _body(text: str, *, needs_input: bool = False, suggestions: list[str] | None = None, **extra: Any) -> dict[str, Any]:
+    return {"text": text, "needs_input": needs_input, "suggestions": suggestions or [], **extra}
+
+
+def _ask(state: dict[str, Any], field: str, text: str, chips: list[str] | None = None) -> dict[str, Any]:
+    state["last_asked"] = field
+    return _body(text, needs_input=True, suggestions=chips if chips is not None else _QUESTION_CHIPS.get(field, []))
+
+
+# ------------------------------------------------------------------------- questions
+
+
+def _next_question(flow: str, slots: dict[str, Any]) -> tuple[str, str] | None:
+    if flow == "stock_single" and not slots.get("symbol"):
         return (
-            "intent",
-            (
-                "Would you like help picking one stock to buy, or setting up a regular monthly "
-                "investment (called a SIP) spread across mutual funds? If you're not sure, most "
-                "beginners start with a monthly SIP."
-            ),
+            "symbol",
+            "Which company are you interested in? You can use its name or stock symbol, for example TCS or RELIANCE.",
         )
-    if state["intent"] == "stock" and not state["symbol"]:
-        return ("symbol", "Which company are you interested in? You can use its name or stock symbol, for example TCS or RELIANCE.")
-    if state["horizon_years"] is None:
+    if flow == "stock_list":
+        if not slots.get("amount_inr"):
+            return (
+                "amount",
+                "How much would you like to invest, in rupees? Just the number is fine, for example 10000.",
+            )
+        return None
+    if slots.get("horizon_years") is None:
         return (
             "horizon_years",
             (
@@ -141,9 +140,9 @@ def _next_question(state: dict[str, Any]) -> tuple[str, str] | None:
                 "Just the number is fine (not sure? 5 years is a common starting point)."
             ),
         )
-    if state["monthly_amount"] is None:
-        return ("monthly_amount", "How much can you invest, in rupees? Just the number is fine, for example 5000.")
-    if state["intent"] != "stock" and state["risk_profile"] is None:
+    if not slots.get("amount_inr"):
+        return ("amount", "How much can you invest, in rupees? Just the number is fine, for example 5000.")
+    if flow != "stock_single" and slots.get("risk_profile") is None:
         return (
             "risk_profile",
             (
@@ -157,149 +156,117 @@ def _next_question(state: dict[str, Any]) -> tuple[str, str] | None:
     return None
 
 
-def _collected_view(state: dict[str, Any]) -> dict[str, Any]:
-    intent = state["intent"]
-    frontend_intent = "stock" if intent == "stock" else "sip" if intent in ("sip_fund", "sip_etf") else None
-    return {
-        "intent": frontend_intent,
-        "symbol": state["symbol"],
-        "horizon_years": state["horizon_years"],
-        "monthly_amount": state["monthly_amount"],
-        "risk": state["risk_profile"],
-    }
+# -------------------------------------------------------------------------- handlers
 
 
-_FINANCE_WORDS = (
-    "stock", "share", "mutual fund", "fund", "sip", "etf", "invest", "nifty", "sensex", "market",
-    "portfolio", "gold", "debt", "bond", "equity", "nav", "dividend", "returns", "cap", "nse", "bse",
-    "ipo", "rupee", "₹", "rs ", "risk", "amc", "elss", "demat", "broker", "price", "buy", "sell", "scheme",
-)
-_RANKING_WORDS = ("name some", "name the", "list", "rank", "top ", "best funds", "decreasing order", "specific fund")
-_NEW_PLAN_WORDS = ("invest", "sip", "monthly", "per month", "a month")
-
-OFF_TOPIC_MESSAGE = (
-    "I can only help with the Indian stock market, mutual funds, SIPs and ETFs. "
-    "That question doesn't look related — try something like “Should I buy TCS for 5 years?” "
-    "or “Which mutual funds should I invest ₹10,000 a month in?”"
-)
-
-
-def _rule_intent(text: str, last_asked: str | None) -> str:
-    t = text.lower()
-    if last_asked and len(t.split()) <= 6:
-        return "answer"  # a short reply to the question we just asked
-    if not any(w in t for w in _FINANCE_WORDS) and not re.search(r"\b[A-Z]{2,12}\b", text):
-        return "off_topic"
-    if any(w in t for w in _RANKING_WORDS) and any(w in t for w in ("fund", "stock", "etf", "mutual")):
-        return "fund_list" if "stock" not in t else "stock"
-    if any(w in t for w in ("stock", "share")):
-        return "stock"
-    return "plan"
-
-
-async def classify_intent(message: str, last_asked: str | None, has_plan: bool) -> str:
-    """One of: off_topic | answer | fund_list | stock | plan. Cheap LLM first (so wording is
-    understood, not keyword-matched), deterministic rules if the model is unavailable."""
-    try:
-        model = get_llm("cheap")
-        prompt = (
-            "Classify the user's message to an Indian investing assistant. Reply with ONE word:\n"
-            "off_topic - not about stocks, mutual funds, SIPs, ETFs, gold, markets or personal investing\n"
-            "answer - a short reply to the assistant's pending question"
-            f" (pending question: {last_asked or 'none'})\n"
-            "fund_list - asks to NAME specific mutual funds / a ranked list of funds\n"
-            "stock - asks about a specific stock or its price/outlook\n"
-            "plan - wants an allocation/plan for a monthly or lump-sum amount\n"
-            f"A plan was already shown this session: {has_plan}.\n"
-            f"Message: {message!r}"
+def _unclear_reply(ex: Extraction) -> dict[str, Any]:
+    beginner = ex.slots.experience_level == "beginner"
+    if beginner:
+        text = (
+            "Welcome, and good that you're starting early. Everyone begins somewhere. "
+            "What would you like to do first?"
         )
-        reply = await model.ainvoke(prompt)
-        word = extract_text(reply.content).strip().lower().split()[0].strip(".,:;\"'")
-        if word in {"off_topic", "answer", "fund_list", "stock", "plan"}:
-            return word
+    else:
+        text = "I want to point you in the right direction. Which of these is closest to what you need?"
+    return _body(text, needs_input=True, suggestions=list(STARTER_SUGGESTIONS if beginner else _unclear_chips(ex)))
+
+
+def _unclear_chips(ex: Extraction) -> list[str]:
+    amount = ex.slots.amount_inr
+    shown = f"₹{amount:,.0f}" if amount else "₹10,000"
+    return [
+        f"Suggest 10 stocks for {shown}",
+        f"Plan a {shown} monthly SIP",
+        "What is an ETF?",
+        "How is the market today?",
+    ]
+
+
+def _off_topic_reply() -> dict[str, Any]:
+    return _body(OFF_TOPIC_MESSAGE, suggestions=list(OFF_TOPIC_SUGGESTIONS), error=True)
+
+
+async def _symbol_question(
+    state: dict[str, Any], ex: Extraction, master: list[dict[str, str]], message: str
+) -> dict[str, Any]:
+    candidates = ex.symbol_candidates[:5]
+    if not master:
+        return _body(
+            "Market data isn't loaded yet, so I can't look up that company. "
+            "Run the data sync (POST /market/refresh) and try again."
+        )
+    if not candidates:
+        candidates = search_universe(message, master)
+    if not candidates:
+        known = {entry["symbol"]: entry for entry in master}
+        candidates = [known[s] for s in _WELL_KNOWN_SYMBOLS if s in known][:4]
+        lead = "I couldn't find that company in the NSE list I hold. Pick one of these, or type a company name:"
+    else:
+        lead = "I found more than one match. Which one do you mean?"
+    state["symbol_candidates"] = candidates
+    state["last_asked"] = "symbol"
+    chips = [f"{c['symbol']} — {c['name']}" if c.get("name") else c["symbol"] for c in candidates]
+    return _body(lead, needs_input=True, suggestions=chips)
+
+
+async def _stock_single_reply(state: dict[str, Any]) -> dict[str, Any]:
+    slots = state["slots"]
+    try:
+        guide = await guide_symbol(slots["symbol"], int(slots["horizon_years"]), float(slots["amount_inr"]))
     except Exception as exc:
-        logger.info("Intent classifier unavailable, using rules: %s", exc)
-    return _rule_intent(message, last_asked)
+        logger.info("Guidance unavailable for %s: %s", slots["symbol"], exc)
+        return _body(
+            f"DATA_UNAVAILABLE: I couldn't fetch live data for {slots['symbol']} right now, so I won't guess."
+        )
+    text = f"{guide['symbol']}: {guide['stance']}. {guide['summary']}"
+    return _body(text, guidance=guide)
 
 
-async def _ranked_funds_reply(session_id: str, state: dict[str, Any]) -> dict[str, Any]:
-    risk = state["risk_profile"] or DEFAULT_RISK_PROFILE
-    years = int(state["horizon_years"] or DEFAULT_HORIZON_YEARS)
+async def _ranked_funds_reply(state: dict[str, Any]) -> dict[str, Any]:
+    slots = state["slots"]
+    risk = slots.get("risk_profile") or DEFAULT_RISK_PROFILE
+    years = int(slots.get("horizon_years") or DEFAULT_HORIZON_YEARS)
     rows = await rank_funds(risk, years)
     if not rows:
-        text = "I couldn't find scored mutual funds right now — the fund master may not be synced yet."
+        text = "DATA_UNAVAILABLE: I couldn't find scored mutual funds right now — the fund master may not be synced yet."
     else:
         lines, current = [], None
         for row in rows:
             if row["category"] != current:
                 current = row["category"]
                 lines.append(f"\n{row['category_label'].capitalize()}:")
-            lines.append(f"{row['rank']}. {row['scheme_name']} — {row['trailing_return_pct']:.1f}% a year ({row['return_window']})")
+            lines.append(
+                f"{row['rank']}. {row['scheme_name']} — {row['trailing_return_pct']:.1f}% a year ({row['return_window']})"
+            )
         text = (
             f"Here are {len(rows)} funds for {_RISK_PLAIN_LABELS.get(risk, risk)} over {years} years, "
             "grouped by type and ranked by past yearly return (1 = strongest). Past returns don't "
             "guarantee future results — this isn't a recommendation." + "\n".join(lines)
         )
-    return {
-        "session_id": session_id,
-        "needs_input": False,
-        "text": text,
-        "ranking": rows,
-        "collected": _collected_view(state),
-    }
+    return _body(text, ranking=rows)
 
 
-async def chat_turn(session_id: str, message: str) -> dict[str, Any]:
-    state = _state(session_id)
-    last_asked = state.get("last_asked")
-    plan_done = _next_question(state) is None
-    intent = await classify_intent(message, last_asked, plan_done)
+async def _etf_plan_reply(state: dict[str, Any]) -> dict[str, Any]:
+    slots = state["slots"]
+    cap_style = _RISK_TO_ETF_CAP_STYLE.get(slots["risk_profile"], "flexi")
+    plan = await build_etf_sip(float(slots["amount_inr"]), int(slots["horizon_years"]), cap_style)
+    lines = [
+        f"{row['label']} ({row['symbol']}): ₹{row['monthly_inr']:,.0f} ({row['weight_pct']}%)"
+        for row in plan["sleeves"]
+    ]
+    text = (
+        f"For ₹{plan['monthly_amount']:,.0f} a month over {plan['horizon_years']} years, here's a starting ETF mix "
+        "(bought through your broker — a different mechanism from a mutual fund SIP):\n"
+        + "\n".join(lines)
+        + f"\n{plan['note']}"
+    )
+    return _body(text, plan=plan)
 
-    if intent == "off_topic":
-        return {
-            "session_id": session_id,
-            "needs_input": False,
-            "error": True,
-            "text": OFF_TOPIC_MESSAGE,
-            "collected": _collected_view(state),
-        }
-    if intent == "fund_list":
-        return await _ranked_funds_reply(session_id, state)
-    if intent in ("stock", "plan") and plan_done:
-        # A finished conversation must not silently replay the old answer: start fresh.
-        _sessions.pop(session_id, None)
-        state = _state(session_id)
-        last_asked = None
 
-    _absorb(state, message.strip(), last_asked)
-
-    next_q = _next_question(state)
-    if next_q:
-        field, question = next_q
-        state["last_asked"] = field
-        return {"session_id": session_id, "needs_input": True, "text": question, "collected": _collected_view(state)}
-
-    if state["intent"] == "stock":
-        guide = await guide_symbol(state["symbol"], int(state["horizon_years"]), float(state["monthly_amount"]))
-        text = f"{guide['symbol']}: {guide['stance']}. {guide['summary']}"
-        return {"session_id": session_id, "needs_input": False, "text": text, "guidance": guide, "collected": _collected_view(state)}
-
-    if state["intent"] == "sip_etf":
-        cap_style = _RISK_TO_ETF_CAP_STYLE.get(state["risk_profile"], "flexi")
-        plan = await build_etf_sip(float(state["monthly_amount"]), int(state["horizon_years"]), cap_style)
-        lines = [
-            f"{row['label']} ({row['symbol']}): ₹{row['monthly_inr']:,.0f} ({row['weight_pct']}%)" for row in plan["sleeves"]
-        ]
-        text = (
-            f"For ₹{plan['monthly_amount']:,.0f} a month over {plan['horizon_years']} years, here's a starting ETF mix "
-            "(bought through your broker — a different mechanism from a mutual fund SIP):\n"
-            + "\n".join(lines)
-            + f"\n{plan['note']}"
-        )
-        return {"session_id": session_id, "needs_input": False, "text": text, "plan": plan, "collected": _collected_view(state)}
-
-    # Default SIP path: real mutual funds (Workstream B's suggest_mix), not ETFs.
-    result = await suggest_mix(state["monthly_amount"], state["horizon_years"], state["risk_profile"])
+async def _fund_plan_reply(state: dict[str, Any]) -> dict[str, Any]:
+    """Default SIP path: real mutual funds (`suggest_mix`), not ETFs."""
+    slots = state["slots"]
+    result = await suggest_mix(slots["amount_inr"], slots["horizon_years"], slots["risk_profile"])
     sleeves = [
         {
             "symbol": sleeve.get("scheme_code") or "—",
@@ -325,4 +292,135 @@ async def chat_turn(session_id: str, message: str) -> dict[str, Any]:
         + "\n".join(f"{row['label']}: ₹{row['monthly_inr']:,.0f} ({row['weight_pct']}%)" for row in sleeves)
         + f"\n\n{result['explanation']}"
     )
-    return {"session_id": session_id, "needs_input": False, "text": text, "plan": plan, "collected": _collected_view(state)}
+    return _body(text, plan=plan)
+
+
+async def _not_available_yet(intent: str) -> dict[str, Any]:
+    return _body(
+        "I can't answer that kind of question yet. Pick one of these instead:",
+        suggestions=list(STARTER_SUGGESTIONS),
+    )
+
+
+# ---------------------------------------------------------------------------- engine
+
+
+def _start_flow(state: dict[str, Any], ex: Extraction) -> None:
+    """Begin a new request: fresh slots, keeping only who the user said they are. Planning a
+    SIP right after a stock list reuses its amount, horizon and risk (the 'index fund
+    instead?' hop) because the user never restated them."""
+    carried: dict[str, Any] = {}
+    if state["slots"].get("experience_level"):
+        carried["experience_level"] = state["slots"]["experience_level"]
+    last = state.get("last_result")
+    if ex.intent in ("plan_sip_fund", "plan_sip_etf") and last and last["intent"] == "stock_list":
+        previous = last["slots"]
+        for name in ("amount_inr", "horizon_years", "risk_profile"):
+            if previous.get(name):
+                carried[name] = previous[name]
+        carried["amount_kind"] = "monthly"
+    state["slots"] = carried
+    state["intent"] = ex.intent
+    state["last_asked"] = None
+    state["symbol_candidates"] = []
+
+
+def _apply_slots(state: dict[str, Any], ex: Extraction) -> None:
+    provided = ex.slots.provided()
+    provided.pop("concept", None)
+    state["slots"].update(provided)
+
+
+async def _run_flow(
+    state: dict[str, Any], ex: Extraction, master: list[dict[str, str]], message: str
+) -> dict[str, Any]:
+    flow = state["intent"]
+    slots = state["slots"]
+    question = _next_question(flow, slots)
+    if question:
+        field, text = question
+        if field == "symbol":
+            return await _symbol_question(state, ex, master, message)
+        return _ask(state, field, text)
+
+    if flow == "stock_single":
+        body = await _stock_single_reply(state)
+    elif flow == "plan_sip_etf":
+        body = await _etf_plan_reply(state)
+    elif flow == "stock_list":
+        body = await _not_available_yet(flow)
+    else:
+        body = await _fund_plan_reply(state)
+    state["last_result"] = {"intent": flow, "slots": dict(slots)}
+    state["intent"] = None
+    state["last_asked"] = None
+    return body
+
+
+async def _dispatch(
+    state: dict[str, Any], ex: Extraction, message: str, master: list[dict[str, str]]
+) -> tuple[str, dict[str, Any]]:
+    intent = ex.intent
+    if intent == "answer":
+        if state["intent"]:
+            pass  # keep filling the open flow
+        elif state.get("last_result"):
+            # A tweak ("make it 8 stocks", "safer ones?") reopens the last finished plan.
+            state["intent"] = state["last_result"]["intent"]
+            state["slots"] = dict(state["last_result"]["slots"])
+        else:
+            intent = "unclear"
+    elif intent in FLOW_INTENTS:
+        _start_flow(state, ex)
+    if intent == "answer":
+        flow = state["intent"]
+        if state["last_asked"] == "symbol" and not ex.slots.symbol:
+            ex = ex.model_copy(update={"symbol_candidates": state.get("symbol_candidates", [])})
+        _apply_slots(state, ex)
+        return flow, await _run_flow(state, ex, master, message)
+    if intent in FLOW_INTENTS:
+        _apply_slots(state, ex)
+        return intent, await _run_flow(state, ex, master, message)
+
+    if intent == "off_topic":
+        return intent, _off_topic_reply()
+    if intent == "fund_list":
+        _apply_slots(state, ex)
+        return intent, await _ranked_funds_reply(state)
+    if intent in ("education", "market_overview", "portfolio_help"):
+        return intent, await _not_available_yet(intent)
+    return "unclear", _unclear_reply(ex)
+
+
+async def chat_turn(session_id: str, message: str) -> dict[str, Any]:
+    message = message.strip()
+    if _RESET_RE.search(message):
+        state = await reset_session(session_id)
+        body = _body(
+            "Starting fresh. What would you like to do?",
+            needs_input=True,
+            suggestions=list(STARTER_SUGGESTIONS),
+        )
+        return {"session_id": session_id, "intent": None, "collected": _collected_view(state), "sources": [], **body}
+
+    state = await load_session(session_id)
+    master = await load_symbol_master()
+    ex = await extract(
+        message,
+        last_asked=state["last_asked"],
+        has_prior_plan=state.get("last_result") is not None or state["intent"] is not None,
+        master=master,
+    )
+    intent, body = await _dispatch(state, ex, message, master)
+    add_turn(state, message, body["text"])
+    await save_session(session_id, state)
+    return {
+        "session_id": session_id,
+        "intent": intent,
+        "collected": _collected_view(state),
+        "sources": [],
+        **body,
+    }
+
+
+__all__ = ["OFF_TOPIC_MESSAGE", "chat_turn", "new_state"]

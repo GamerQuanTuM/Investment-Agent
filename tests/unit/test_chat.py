@@ -9,19 +9,7 @@ import uuid
 
 import pytest
 
-from investment_agent.research import chat
-
-
-@pytest.fixture(autouse=True)
-def _isolate_sessions(monkeypatch: pytest.MonkeyPatch):
-    chat._sessions.clear()
-
-    def _no_llm(*args, **kwargs):
-        raise RuntimeError("LLM disabled in unit tests")
-
-    monkeypatch.setattr(chat, "get_llm", _no_llm)  # force the deterministic intent rules
-    yield
-    chat._sessions.clear()
+from investment_agent.research import chat, chat_session
 
 
 async def test_off_topic_message_returns_error_and_keeps_state():
@@ -29,7 +17,9 @@ async def test_off_topic_message_returns_error_and_keeps_state():
     result = await chat.chat_turn(session_id, "what is the weather today")
     assert result["error"] is True
     assert result["needs_input"] is False
-    assert chat._sessions[session_id]["intent"] is None
+    assert result["intent"] == "off_topic"
+    assert len(result["suggestions"]) >= 2
+    assert (await chat_session.load_session(session_id))["intent"] is None
 
 
 async def test_name_some_funds_returns_ranked_list_not_categories(monkeypatch: pytest.MonkeyPatch):
@@ -219,3 +209,75 @@ async def test_stock_intent_skips_risk_question(monkeypatch: pytest.MonkeyPatch)
 
     assert result["needs_input"] is False
     assert result["guidance"]["symbol"] == "TCS"
+
+
+async def test_failing_beginner_message_never_asks_which_company(monkeypatch: pytest.MonkeyPatch):
+    """The original bug: a multi-stock request was routed to the single-stock path and asked
+    "Which company?". It must now be a stock_list request with every slot filled at once."""
+    result = await chat.chat_turn(_new_session(), FAILING_MESSAGE)
+    assert result["intent"] == "stock_list"
+    assert "which company" not in result["text"].lower()
+    assert result["collected"]["amount_inr"] == 10000.0
+    assert result["collected"]["stock_count"] == 12
+    assert result["collected"]["experience_level"] == "beginner"
+
+
+async def test_unknown_all_caps_word_is_never_a_ticker():
+    result = await chat.chat_turn(_new_session(), "Should I buy ZZQX for 5 years?")
+    assert result["collected"]["symbol"] is None
+    assert result["needs_input"] is True
+    assert result["suggestions"]  # pick from real symbols, not an invented one
+    assert all(s.split(" ")[0] in {"RELIANCE", "TCS", "HDFCBANK", "INFY"} for s in result["suggestions"])
+
+
+async def test_ambiguous_company_name_offers_choices(monkeypatch: pytest.MonkeyPatch):
+    result = await chat.chat_turn(_new_session(), "tell me about tata stock")
+    assert result["needs_input"] is True
+    symbols = {s.split(" ")[0] for s in result["suggestions"]}
+    assert symbols == {"TCS", "TATAMOTORS"}
+
+
+async def test_unclear_message_asks_one_question_with_chips():
+    result = await chat.chat_turn(_new_session(), "asdkj qwlkj zzz")
+    assert result["intent"] == "unclear"
+    assert result["needs_input"] is True
+    assert 3 <= len(result["suggestions"]) <= 4
+
+
+async def test_beginner_start_gets_starter_chips():
+    result = await chat.chat_turn(_new_session(), "I'm new, where do I start?")
+    assert result["intent"] == "unclear"
+    assert result["suggestions"] == chat.STARTER_SUGGESTIONS
+
+
+async def test_start_over_resets_the_conversation():
+    session_id = _new_session()
+    await chat.chat_turn(session_id, "monthly SIP")
+    reset = await chat.chat_turn(session_id, "start over")
+    assert reset["collected"]["intent"] is None
+    state = await chat_session.load_session(session_id)
+    assert state["intent"] is None and state["slots"] == {}
+
+
+async def test_sip_after_stock_list_reuses_the_amount():
+    session_id = _new_session()
+    await chat_session.save_session(
+        session_id,
+        {
+            **chat_session.new_state(),
+            "last_result": {
+                "intent": "stock_list",
+                "slots": {"amount_inr": 10000.0, "horizon_years": 5, "risk_profile": "moderate"},
+            },
+        },
+    )
+    result = await chat.chat_turn(session_id, "Show me an index fund SIP instead")
+    assert result["intent"] == "plan_sip_fund"
+    assert result["needs_input"] is False
+    assert result["collected"]["monthly_amount"] == 10000.0
+
+
+FAILING_MESSAGE = (
+    "I am new to stock market. In current market and future potential give me 10-12 stocks "
+    "I can invest for 10000 rupees and also how much to invest in each."
+)

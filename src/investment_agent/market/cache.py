@@ -34,6 +34,7 @@ class CacheTTL(IntEnum):
     MF_NAV_HISTORY = 12 * 60 * 60
     NEWS = 30 * 60
     MACRO = 6 * 60 * 60
+    CHAT_SESSION = 24 * 60 * 60
 
 
 def _get_client() -> Redis:
@@ -82,3 +83,11 @@ async def cache_set(key: str, value: str, ttl_seconds: int | CacheTTL) -> None:
         await client.set(key, value, ex=int(ttl_seconds))
     except Exception:
         logger.debug("Redis cache write skipped for %s", key)
+
+
+async def cache_delete(key: str) -> None:
+    try:
+        client = _get_client()
+        await client.delete(key)
+    except Exception:
+        logger.debug("Redis cache delete skipped for %s", key)

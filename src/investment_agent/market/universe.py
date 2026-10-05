@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import select
 
 from investment_agent.config.settings import get_settings
-from investment_agent.db.models.market import DailyBar, FundamentalSnapshot
+from investment_agent.db.models.market import DailyBar, FundamentalSnapshot, Instrument
 from investment_agent.db.models.user import InvestmentProfile, User
 from investment_agent.db.session import async_session_factory
 from investment_agent.market.indstocks import IndstocksClient, equity_cash_available, scrip_code
@@ -44,6 +44,39 @@ async def load_user_profile_from_db(user_id: str) -> dict[str, Any] | None:
     except Exception:
         logger.info("User profile database lookup unavailable for %s", user_id)
         return None
+
+
+_MASTER_TTL = timedelta(minutes=10)
+_master_cache: tuple[datetime, list[dict[str, str]]] | None = None
+
+
+async def load_symbol_master() -> list[dict[str, str]]:
+    """Every NSE equity symbol we hold (instrument master plus fundamentals), with the
+    company name when a fundamental snapshot carries one. This is the only place chat may
+    accept a ticker from. Empty when the DB is unreachable or the sync has not run."""
+    global _master_cache
+    now = datetime.now(UTC)
+    if _master_cache is not None and now - _master_cache[0] < _MASTER_TTL:
+        return _master_cache[1]
+    names: dict[str, str] = {}
+    try:
+        async with async_session_factory() as session:
+            for symbol, name in (
+                await session.execute(select(FundamentalSnapshot.symbol, FundamentalSnapshot.name))
+            ).all():
+                names.setdefault(symbol.upper(), name or "")
+            for (symbol,) in (
+                await session.execute(
+                    select(Instrument.symbol_name).where(Instrument.exchange == "NSE")
+                )
+            ).all():
+                names.setdefault(symbol.upper(), "")
+    except Exception:
+        logger.info("Symbol master database lookup unavailable")
+        return []
+    master = [{"symbol": symbol, "name": name} for symbol, name in sorted(names.items())]
+    _master_cache = (now, master)
+    return master
 
 
 async def load_candidates_from_db() -> list[dict[str, Any]]:

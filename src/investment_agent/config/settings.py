@@ -116,6 +116,9 @@ class Settings(BaseSettings):
     INDSTOCKS_WATCHLIST: str = ""
     MARKET_DATA_MAX_AGE_HOURS: int = 36
     QUOTE_CACHE_TTL_SECONDS: int = 120
+    # Stock-list picker liquidity floors: names below either are treated as penny/illiquid.
+    STOCK_PICK_MIN_MARKET_CAP_CR: float = 5000.0
+    STOCK_PICK_MIN_AVG_VOLUME: float = 100000.0
 
     # Mutual fund NAVs (official AMFI file, no API key)
     AMFI_NAV_URL: str = "https://portal.amfiindia.com/spages/NAVAll.txt"
