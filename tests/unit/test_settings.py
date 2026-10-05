@@ -7,7 +7,7 @@ def test_settings_defaults():
     assert settings.LLM_PROVIDER in ["openai", "gemini", "anthropic", "groq", "ollama"]
     assert "postgresql+asyncpg://" in settings.async_database_url
     assert "postgresql://" in settings.sync_database_url
-    assert "redis://" in settings.resolved_redis_url
+    assert settings.resolved_redis_url.startswith(("redis://", "rediss://"))
 
 
 def test_settings_custom_database_url():

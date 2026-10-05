@@ -76,9 +76,9 @@ async def load_candidates_from_db() -> list[dict[str, Any]]:
         if symbol in seen:
             continue
         seen.add(symbol)
-        bar = latest_bar.get(symbol)
-        price = bar.close if bar is not None else None
-        price_time = bar.bar_time if bar is not None else None
+        latest: DailyBar | None = latest_bar.get(symbol)
+        price = latest.close if latest is not None else None
+        price_time = latest.bar_time if latest is not None else None
         if price_time is not None and price_time.tzinfo is None:
             price_time = price_time.replace(tzinfo=UTC)
         fresh = (

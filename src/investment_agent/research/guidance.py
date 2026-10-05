@@ -55,7 +55,7 @@ def rule_stance(
             blockers.append(f"Return on equity is {roe_pct:.1f}%, below the 12% quality line.")
         else:
             reasons.append(f"Return on equity is {roe_pct:.1f}%.")
-    is_financial = bool(sector) and any(word in sector.lower() for word in ("financial", "bank"))
+    is_financial = sector is not None and any(word in sector.lower() for word in ("financial", "bank"))
     if debt_to_equity is not None and not is_financial and debt_to_equity > 2:
         blockers.append(f"Debt to equity is {debt_to_equity:.2f}, above 2 for a non-financial company.")
     elif debt_to_equity is not None:

@@ -326,14 +326,15 @@ async def refresh_market_data(
                 bar_count += 1
         summary["daily_bars"] = bar_count
 
-        for row in nav_rows:
+        for nav_row in nav_rows:
+            nav_value = cast(float, nav_row["nav"])
             stmt = pg_insert(NavRecord).values(
                 id=_new_id(),
-                scheme_code=str(row["scheme_code"]),
-                scheme_name=str(row["scheme_name"]),
-                isin=row.get("isin"),
-                nav=float(row["nav"]),
-                nav_date=row["nav_date"],
+                scheme_code=str(nav_row["scheme_code"]),
+                scheme_name=str(nav_row["scheme_name"]),
+                isin=nav_row.get("isin"),
+                nav=float(nav_value),
+                nav_date=nav_row["nav_date"],
                 source_url=settings.AMFI_NAV_URL,
                 created_at=now,
                 updated_at=now,
@@ -341,8 +342,8 @@ async def refresh_market_data(
             stmt = stmt.on_conflict_do_update(
                 constraint="uq_nav_scheme_date",
                 set_={
-                    "nav": float(row["nav"]),
-                    "scheme_name": str(row["scheme_name"]),
+                    "nav": float(nav_value),
+                    "scheme_name": str(nav_row["scheme_name"]),
                     "updated_at": now,
                 },
             )

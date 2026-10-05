@@ -20,7 +20,12 @@ from typing import Any
 
 from investment_agent.llm.factory import extract_text, get_llm
 from investment_agent.research.guidance import guide_symbol
-from investment_agent.research.sip import CATEGORY_PLAIN_LABELS, build_etf_sip, rank_funds, suggest_mix
+from investment_agent.research.sip import (
+    CATEGORY_PLAIN_LABELS,
+    build_etf_sip,
+    rank_funds,
+    suggest_mix,
+)
 
 logger = logging.getLogger(__name__)
 
