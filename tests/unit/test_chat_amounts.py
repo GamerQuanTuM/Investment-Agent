@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import date, timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -190,15 +190,20 @@ async def test_capital_message_is_a_one_time_plan_with_named_funds(fake_plans, u
     assert all(s["data_date"] for s in result["sources"])
 
 
-async def test_non_beginner_is_asked_horizon_then_risk_but_never_monthly(fake_plans):
+async def test_a_clear_amount_gets_a_plan_with_stated_defaults_not_two_questions(fake_plans):
+    result = await chat.chat_turn(_sid(), CAPITAL_MESSAGE)
+    assert result["needs_input"] is False and "one-time" in result["text"]
+    assert "To get you started, I assumed 5 years and a balanced mix" in result["text"]
+    assert fake_plans.lump == [(50000.0, 5, "moderate")] and not fake_plans.mix
+
+
+async def test_a_stated_horizon_still_gets_the_risk_question_never_monthly(fake_plans):
     session = _sid()
-    first = await chat.chat_turn(session, CAPITAL_MESSAGE)
-    assert first["needs_input"] and "years" in first["text"].lower()
-    second = await chat.chat_turn(session, "5")
-    assert second["needs_input"] and "dropped" in second["text"].lower()  # the risk question
+    first = await chat.chat_turn(session, CAPITAL_MESSAGE + " for 8 years")
+    assert first["needs_input"] and "dropped" in first["text"].lower()  # the risk question
     done = await chat.chat_turn(session, "B")
     assert done["needs_input"] is False and "one-time" in done["text"]
-    assert fake_plans.lump and not fake_plans.mix
+    assert fake_plans.lump == [(50000.0, 8, "moderate")] and not fake_plans.mix
 
 
 async def test_monthly_amount_stays_monthly_and_shows_fund_names(fake_plans):
@@ -329,16 +334,16 @@ async def test_etf_plan_for_a_lump_sum_says_one_time(monkeypatch: pytest.MonkeyP
 # ------------------------------------------------------ suggest_lump_sum (the maths)
 
 
-def _history(latest: float = 50.0, years: int = 6) -> list[dict[str, Any]]:
-    start = date(2026, 10, 1)
+def _history(latest: float = 50.0, years: int = 6, age_days: int = 1) -> list[dict[str, Any]]:
+    start = datetime.now(UTC).date() - timedelta(days=age_days)
     days = years * 365
     return [{"date": (start - timedelta(days=d)).isoformat(), "nav": latest / (1.0003**d)} for d in range(days)]
 
 
-def _pick(code: str, name: str) -> dict[str, Any]:
+def _pick(code: str, name: str, age_days: int = 1) -> dict[str, Any]:
     return {
         "scheme": SimpleNamespace(scheme_code=code, name=name),
-        "history": {"nav_history": _history(), "source_name": "mfapi.in", "source_url": f"https://api.mfapi.in/mf/{code}"},
+        "history": {"nav_history": _history(age_days=age_days), "source_name": "mfapi.in", "source_url": f"https://api.mfapi.in/mf/{code}"},
         "score": 3.1,
         "annual_score": 12.0,
         "has_5y_history": True,
@@ -359,7 +364,8 @@ async def test_suggest_lump_sum_amounts_units_and_spread(monkeypatch: pytest.Mon
     assert by_cat["large cap"]["amount_inr"] == 40_000.0 and by_cat["flexi cap"]["amount_inr"] == 30_000.0
     fund = by_cat["large cap"]["funds"][0]
     assert fund["units"] == pytest.approx(40_000.0 / 50.0, abs=0.001)
-    assert fund["latest_nav"] == 50.0 and fund["nav_date"] == "2026-10-01"
+    assert fund["latest_nav"] == 50.0
+    assert fund["nav_date"] == (datetime.now(UTC).date() - timedelta(days=1)).isoformat()
     assert fund["return_3y_pct"] == pytest.approx(((1.0003 ** (365 * 3)) ** (1 / 3) - 1) * 100, abs=0.5)
     assert fund["return_5y_pct"] is not None
     assert by_cat["gold"]["status"] == "DATA_UNAVAILABLE" and by_cat["gold"]["scheme_name"] is None
@@ -368,6 +374,22 @@ async def test_suggest_lump_sum_amounts_units_and_spread(monkeypatch: pytest.Mon
     assert spread["months"] == 12 and spread["monthly_inr"] == pytest.approx(100_000 / 12, abs=0.01)
     assert "₹1,00,000" in spread["note"] and "not advice" in spread["note"]
     assert "/month" not in result["explanation"]
+
+
+async def test_suggest_lump_sum_never_names_a_dormant_or_non_growth_fund(monkeypatch: pytest.MonkeyPatch):
+    async def top(group: str, span_years: float, limit: int = 5):
+        code, name = FUNDS[group]
+        return [
+            _pick("900001", f"Old {name}", age_days=2000),  # best score, but no NAV for years
+            _pick("900002", "Zed Large Cap Fund - Direct Plan - Bonus"),  # not the growth option
+            _pick("900003", "Zed Large Cap Fund - Direct Plan - IDCW Payout"),
+            _pick(code, name),
+        ]
+
+    monkeypatch.setattr(sip, "_top_funds", top)
+    result = await sip.suggest_lump_sum(100_000.0, 5, "moderate")
+    for sleeve in result["sleeves"]:
+        assert [f["scheme_name"] for f in sleeve["funds"]] == [FUNDS[sleeve["category"]][1]]
 
 
 def test_spread_months_follow_the_equity_share():

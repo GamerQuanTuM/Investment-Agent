@@ -13,7 +13,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import date, timedelta
+import re
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -446,7 +447,7 @@ async def _explain_suggestion(risk_profile: str, horizon_years: int, sleeves: li
             "'flexi cap', 'mid cap', 'small cap', or 'debt fund' literally. "
             f"Risk profile: {risk_profile}. Horizon: {horizon_years} years. Sleeves: {json.dumps(sleeves)}."
         )
-        reply = await model.ainvoke(prompt)
+        reply = await asyncio.wait_for(model.ainvoke(prompt), timeout=12.0)  # never stall the chat
         text = extract_text(reply.content)
         text = text.strip()
         return text or _fallback_suggestion_explanation(risk_profile, horizon_years, sleeves)
@@ -547,6 +548,21 @@ async def suggest_mix(
 
 _NON_EQUITY_GROUPS = ("debt", "gold")
 _LUMP_FUNDS_PER_CATEGORY = 3
+# A fund whose newest published NAV is older than this is closed, merged or dormant: it can
+# score well on old data but cannot be bought, so a one-time plan never names it.
+MAX_NAV_AGE_DAYS = 10
+_NOT_GROWTH_NAME = re.compile(r"\b(bonus|idcw|dividend|payout|reinvest\w*)\b", re.IGNORECASE)
+
+
+def _is_current_growth_fund(pick: dict[str, Any], today: date) -> bool:
+    name = str(pick["scheme"].name)
+    if _NOT_GROWTH_NAME.search(name):
+        return False
+    try:
+        latest = date.fromisoformat(pick["history"]["nav_history"][0]["date"])
+    except (KeyError, IndexError, ValueError):
+        return False
+    return (today - latest).days <= MAX_NAV_AGE_DAYS
 
 
 def spread_option(amount_inr: float, weights: dict[str, float]) -> dict[str, Any]:
@@ -598,9 +614,14 @@ async def suggest_lump_sum(
     span_key = return_span if return_span in RETURN_SPANS else "quarter"
     span_length, span_label = RETURN_SPANS[span_key]
     weights = _resolve_risk_weights(horizon_years, risk_profile)
-    ranked = await asyncio.gather(
-        *(_top_funds(group, span_length, limit=_LUMP_FUNDS_PER_CATEGORY) for group in weights)
+    pools = await asyncio.gather(
+        *(_top_funds(group, span_length, limit=_CANDIDATE_POOL_PER_GROUP) for group in weights)
     )
+    today = datetime.now(UTC).date()
+    ranked = [
+        [pick for pick in pool if _is_current_growth_fund(pick, today)][:_LUMP_FUNDS_PER_CATEGORY]
+        for pool in pools
+    ]
 
     sleeves: list[dict[str, Any]] = []
     for (category, weight_pct), picks in zip(weights.items(), ranked, strict=True):

@@ -32,6 +32,7 @@ type Bubble = {
   stockPlan?: StockPlan;
   glossary?: GlossaryEntry;
   comparison?: ChatComparison;
+  notice?: string;
   sources?: EvidenceItem[];
   suggestions?: string[];
   dataUnavailable?: boolean;
@@ -224,6 +225,7 @@ export default function ChatPage() {
           stockPlan: reply.stock_plan ?? undefined,
           glossary: reply.glossary,
           comparison: reply.comparison,
+          notice: reply.notice,
           sources: reply.sources,
           suggestions: reply.suggestions,
           dataUnavailable: reply.data_status === "DATA_UNAVAILABLE",
@@ -319,6 +321,9 @@ export default function ChatPage() {
                     ) : (
                       <>
                         {showText && (message.stockPlan ? textBesideStockPlan(message.text) : message.text)}
+                        {message.notice && (
+                          <p className="mb-2 text-xs italic text-(--text-secondary)">{message.notice}</p>
+                        )}
                         {message.glossary && <GlossaryCard entry={message.glossary} />}
                         {message.comparison && <ComparisonCard comparison={message.comparison} />}
                       </>

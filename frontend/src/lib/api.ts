@@ -157,15 +157,32 @@ export interface SipPlan {
   }[];
 }
 
-export function sendChat(sessionId: string, message: string) {
-  return fetch(`${API_BASE_URL}/research/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId, message }),
-  }).then(async (res) => {
+const CHAT_TIMEOUT_MS = 90_000;
+
+export async function sendChat(sessionId: string, message: string) {
+  // Never leave the chat spinning forever: give up after 90 s with a message the user can act on.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${API_BASE_URL}/research/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, message }),
+      signal: controller.signal,
+    });
     if (!res.ok) throw new Error(await res.text());
-    return res.json() as Promise<ChatReply>;
-  });
+    return (await res.json()) as ChatReply;
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error("That took too long. Please try again in a moment.");
+    }
+    if (err instanceof TypeError) {
+      throw new Error("I couldn't reach the server. Check that the backend is running, then try again.");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export function fetchFundCatalogue(offset: number, query = "", category = "") {

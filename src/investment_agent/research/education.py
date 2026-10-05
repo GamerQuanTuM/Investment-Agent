@@ -10,6 +10,7 @@ we can explain instead of a guess.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Any
@@ -29,6 +30,8 @@ from investment_agent.research.glossary import (
 )
 
 logger = logging.getLogger(__name__)
+
+LLM_TIMEOUT_SECONDS = 12.0  # a stalled model must not stall the chat
 
 EDUCATION_SYSTEM_PROMPT = (
     "You explain one investing concept to someone who has never invested, in 3 to 5 short "
@@ -108,7 +111,9 @@ def glossary_answer(entry: GlossaryEntry, amount_inr: float | None) -> dict[str,
 async def _llm_explain(question: str) -> str | None:
     try:
         model = get_llm("cheap")
-        reply = await model.ainvoke(f"{EDUCATION_SYSTEM_PROMPT}\n\nQuestion: {question}")
+        reply = await asyncio.wait_for(
+            model.ainvoke(f"{EDUCATION_SYSTEM_PROMPT}\n\nQuestion: {question}"), LLM_TIMEOUT_SECONDS
+        )
         text = extract_text(reply.content).strip()
     except Exception as exc:
         logger.info("Education model unavailable: %s", exc)
@@ -174,7 +179,9 @@ def _comparison_sources(comparison: Comparison) -> list[dict[str, Any]]:
 async def _llm_compare(message: str) -> str | None:
     try:
         model = get_llm("cheap")
-        reply = await model.ainvoke(f"{COMPARE_SYSTEM_PROMPT}\n\nQuestion: {message}")
+        reply = await asyncio.wait_for(
+            model.ainvoke(f"{COMPARE_SYSTEM_PROMPT}\n\nQuestion: {message}"), LLM_TIMEOUT_SECONDS
+        )
         text = extract_text(reply.content).strip()
     except Exception as exc:
         logger.info("Comparison model unavailable: %s", exc)

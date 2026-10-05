@@ -10,6 +10,7 @@ check and disclaimer are always deterministic.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import UTC, datetime
@@ -27,7 +28,7 @@ from investment_agent.portfolio.stock_picker import (
     pick_filters,
 )
 from investment_agent.research.evidence import Evidence, SourceType
-from investment_agent.research.formatting import inr
+from investment_agent.research.formatting import inr, normalize_money_text
 from investment_agent.research.llm_guard import is_grounded
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,11 @@ PROVIDERS_DOWN_TEXT = (
     "I couldn't reach the market data providers right now, please try again in a few minutes."
 )
 RETRY_CHIP = "Try again"
+NARRATION_TIMEOUT_SECONDS = 12.0
+CAUTIOUS_NOTE = (
+    "This is already my most cautious setting: mostly large, established companies, with at most "
+    "a fifth in mid-sized ones and no small caps. It can still fall, and no list removes risk."
+)
 BEGINNER_RISK_LINE = (
     "Stocks can fall as well as rise, so only invest money you won't need soon."
 )
@@ -113,19 +119,24 @@ async def narrate(plan: dict[str, Any], *, monthly: bool) -> str:
     facts = _facts_for_model(plan)
     try:
         model = get_llm("cheap")
-        reply = await model.ainvoke(
-            "Write 2 or 3 short plain-English sentences introducing this stock list for a "
-            "beginner. Use ONLY the symbols and numbers in the JSON; do not add any other "
-            "company, price, return or percentage. Do not predict, give targets, or tell the "
-            "user to buy now. State that these are past figures, not a forecast.\n"
-            f"JSON: {json.dumps(facts)}"
+        reply = await asyncio.wait_for(
+            model.ainvoke(
+                "Write 2 or 3 short plain-English sentences introducing this stock list for a "
+                "beginner. Use ONLY the symbols and numbers in the JSON; do not add any other "
+                "company, price, return or percentage. Write every rupee amount with the ₹ sign "
+                "and digit grouping (for example ₹8,552), never as INR or a bare number. "
+                "Do not predict, give targets, or tell the user to buy now. State that these are "
+                "past figures, not a forecast.\n"
+                f"JSON: {json.dumps(facts)}"
+            ),
+            timeout=NARRATION_TIMEOUT_SECONDS,
         )
         text = extract_text(reply.content).strip()
     except Exception as exc:
         logger.info("Stock-list narration unavailable: %s", exc)
         return fallback
     if is_grounded(text, {"plan": facts, "budget": plan["budget"]}, [r["symbol"] for r in plan["rows"]]):
-        return text
+        return normalize_money_text(text)
     logger.info("Stock-list narration rejected by the grounding check")
     return fallback
 
@@ -212,6 +223,8 @@ async def stock_list_reply(slots: dict[str, Any]) -> dict[str, Any]:
             blocks.append(
                 "Tip: with a small amount, one diversified index fund or ETF is usually simpler and cheaper."
             )
+    if plan["risk_profile"] == "conservative" and slots.get("risk_profile") == "conservative":
+        blocks.append(CAUTIOUS_NOTE)
     blocks.extend(c for c in plan["caveats"] if c)
     blocks.append(plan["disclaimer"])
 

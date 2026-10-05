@@ -16,6 +16,7 @@ message ─► chat_intent.extract ─► intent + slots ─► handler ─► r
 | Intent | Meaning | Handler |
 |---|---|---|
 | `education` | "what is an ETF / SIP / P/E / NAV / ELSS / demat", "how does the market work" | `research/education.py` |
+| `guardrail` | price predictions ("which stock will double", "target price for TCS"), guarantees ("is a SIP guaranteed"), emergency / needed-soon money | `research/chat_guardrails.py` (fixed text) |
 | `compare` | "difference between ETF and mutual fund", "SIP vs lump sum", "ETF or index fund" | `research/education.compare` → `research/glossary.py` |
 | `stock_list` | "give me N stocks for ₹X" | `research/stock_list_chat.py` → `portfolio/stock_picker.py` |
 | `stock_single` | a named stock ("should I buy TCS") | `research/guidance.py` (asks horizon + amount if missing) |
@@ -151,6 +152,29 @@ needs no market data and never asks for amount or horizon; it returns `glossary:
 cheap model under a system prompt that forbids prices, returns, tickers and recommendations;
 a mechanical check discards any reply containing digits, currency, tickers or advice, and the
 user then gets the list of terms we can explain.
+
+### Guardrails (`guardrail`)
+
+Decided by rules alone, before and without any model call, so a model can neither miss nor soften
+them. Three fixed replies, each ending with the "not SEBI-registered investment advice"
+disclaimer and containing no figures, tickers or buy language:
+
+- **prediction**: it never forecasts or gives target prices; it explains that it only shows
+  measurable past quality, valuation, trend and steadiness, with sources and dates.
+- **guarantee**: nothing in the market, including a SIP, is guaranteed; you can get back less.
+- **emergency**: job loss, emergency savings, money needed soon, borrowed money: it warns against
+  small caps and risky products for that money and points to safe, easy-to-withdraw places.
+
+A message that only gives an amount and an investing verb ("I have 50000, how should I invest
+it?") becomes a fund plan, and a clear amount with a known kind (one-time/monthly) and nothing
+else is planned straight away with stated defaults (5 years, balanced), not interrogated.
+
+**Timeouts**: every model call in the chat (intent, narration, education, comparison, fund
+explanation) is bounded (10-12 s); on timeout the deterministic rules/templates answer, so a stalled
+model never stalls the chat. The web client also gives up after 90 s with a clear message.
+
+**Fund freshness**: a one-time plan never names a fund whose newest NAV is more than 10 days old
+(closed or merged schemes can still rank well on old data) or a Bonus/IDCW/Payout share class.
 
 ### Comparisons (`compare`)
 

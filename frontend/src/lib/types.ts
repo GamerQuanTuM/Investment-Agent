@@ -475,6 +475,7 @@ export interface ChatReply {
   stock_plan?: StockPlan | null;
   glossary?: GlossaryEntry;
   comparison?: ChatComparison;
+  notice?: string;
   guidance?: GuidanceNote;
   plan?: {
     kind?: "monthly" | "lump_sum";

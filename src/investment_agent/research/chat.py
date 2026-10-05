@@ -24,8 +24,14 @@ from datetime import UTC, datetime
 from typing import Any
 
 from investment_agent.market.universe import load_symbol_master
-from investment_agent.research import chat_market, education, stock_list_chat
-from investment_agent.research.chat_intent import Extraction, Slots, extract, search_universe
+from investment_agent.research import chat_guardrails, chat_market, education, stock_list_chat
+from investment_agent.research.chat_intent import (
+    _OFF_TOPIC_RE,
+    Extraction,
+    Slots,
+    extract,
+    search_universe,
+)
 from investment_agent.research.chat_session import (
     add_turn,
     load_session,
@@ -143,7 +149,15 @@ def _next_question(flow: str, slots: dict[str, Any]) -> tuple[str, str] | None:
             )
         return None
     sip_flow = flow in SIP_FLOWS
-    beginner_defaults = sip_flow and slots.get("experience_level") == "beginner"
+    if sip_flow and slots.get("amount_inr") and slots.get("amount_kind") is None:
+        return (
+            "amount_kind",
+            (
+                f"Is {inr(slots['amount_inr'])} a one-time amount you want to invest now, "
+                "or an amount you'll invest every month?"
+            ),
+        )
+    beginner_defaults = sip_flow and _uses_defaults(slots)
     if slots.get("horizon_years") is None and not beginner_defaults:
         return (
             "horizon_years",
@@ -165,14 +179,6 @@ def _next_question(flow: str, slots: dict[str, Any]) -> tuple[str, str] | None:
                 ),
             )
         return ("amount", "How much can you invest, in rupees? Just the number is fine, for example 5000.")
-    if sip_flow and slots.get("amount_kind") is None:
-        return (
-            "amount_kind",
-            (
-                f"Is {inr(slots['amount_inr'])} a one-time amount you want to invest now, "
-                "or an amount you'll invest every month?"
-            ),
-        )
     if flow != "stock_single" and slots.get("risk_profile") is None and not beginner_defaults:
         return (
             "risk_profile",
@@ -286,11 +292,24 @@ def _is_lump(slots: dict[str, Any]) -> bool:
     return slots.get("amount_kind") == "lump_sum"
 
 
+def _uses_defaults(slots: dict[str, Any]) -> bool:
+    """Skip the horizon and risk questions: for a beginner, and for anyone who already gave a
+    clear amount (and whether it is one-time or monthly) without saying anything else."""
+    if slots.get("experience_level") == "beginner":
+        return True
+    return bool(
+        slots.get("amount_inr")
+        and slots.get("amount_kind")
+        and slots.get("horizon_years") is None
+        and slots.get("risk_profile") is None
+    )
+
+
 def _assume_beginner_defaults(slots: dict[str, Any]) -> list[str]:
-    """A beginner who has not answered horizon/risk gets the safe defaults instead of two more
+    """When `_uses_defaults`, fill horizon/risk with the safe defaults instead of asking two more
     questions. Returns what was assumed so the reply can say so."""
     assumed: list[str] = []
-    if slots.get("experience_level") != "beginner":
+    if not _uses_defaults(slots):
         return assumed
     if slots.get("horizon_years") is None:
         slots["horizon_years"] = DEFAULT_HORIZON_YEARS
@@ -301,11 +320,9 @@ def _assume_beginner_defaults(slots: dict[str, Any]) -> list[str]:
     return assumed
 
 
-def _assumption_note(assumed: list[str]) -> str:
-    return (
-        f"Since you're new, I assumed {' and '.join(assumed)} to get you started. "
-        "Tap an option below to change it."
-    )
+def _assumption_note(assumed: list[str], slots: dict[str, Any]) -> str:
+    lead = "Since you're new, I" if slots.get("experience_level") == "beginner" else "To get you started, I"
+    return f"{lead} assumed {' and '.join(assumed)}. Tap an option below to change it."
 
 
 def _assumed_extra(assumed: list[str], slots: dict[str, Any]) -> dict[str, Any]:
@@ -385,7 +402,7 @@ async def _etf_plan_reply(state: dict[str, Any]) -> dict[str, Any]:
         )
     text = intro + "\n".join(lines) + f"\n{plan['note']}"
     if assumed:
-        text = f"{_assumption_note(assumed)}\n\n{text}"
+        text = f"{_assumption_note(assumed, slots)}\n\n{text}"
     return _body(
         text,
         plan=plan,
@@ -447,7 +464,7 @@ async def _lump_sum_fund_reply(state: dict[str, Any]) -> dict[str, Any]:
         + f"\n\n{normalize_money_text(result['explanation'])}\n{result['note']}"
     )
     if assumed:
-        text = f"{_assumption_note(assumed)}\n\n{text}"
+        text = f"{_assumption_note(assumed, slots)}\n\n{text}"
     suggestions = [*(_ASSUMPTION_CHIPS if assumed else []), "What is NAV?"]
     return _body(
         text,
@@ -503,7 +520,7 @@ async def _fund_plan_reply(state: dict[str, Any]) -> dict[str, Any]:
         + f"\n\n{normalize_money_text(result['explanation'])}"
     )
     if assumed:
-        text = f"{_assumption_note(assumed)}\n\n{text}"
+        text = f"{_assumption_note(assumed, slots)}\n\n{text}"
     extra: dict[str, Any] = _assumed_extra(assumed, slots)
     if any(row["scheme_name"] for row in sleeves):
         extra["sources"] = _fund_sources(sleeves)
@@ -616,14 +633,17 @@ async def _dispatch(
     if intent == "fund_list":
         _apply_slots(state, ex)
         return intent, await _ranked_funds_reply(state)
+    if intent == "guardrail":
+        stance = chat_guardrails.reply(message)
+        return intent, _body(stance["text"], suggestions=stance["suggestions"], guardrail=stance["kind"])
     if intent == "education":
         amount = state["slots"].get("amount_inr") or ex.slots.amount_inr
         answer = await education.explain(message, ex.slots.concept, amount)
+        extra: dict[str, Any] = {"glossary": answer["glossary"]} if "glossary" in answer else {}
+        if _OFF_TOPIC_RE.search(message):  # "capital of France, also what is NAV?"
+            extra["notice"] = "I can only help with investing, so I've answered just that part."
         return intent, _body(
-            answer["text"],
-            suggestions=answer["suggestions"],
-            sources=answer["sources"],
-            **({"glossary": answer["glossary"]} if "glossary" in answer else {}),
+            answer["text"], suggestions=answer["suggestions"], sources=answer["sources"], **extra
         )
     if intent == "compare":
         answer = await education.compare(message, ex.slots.term_a, ex.slots.term_b)

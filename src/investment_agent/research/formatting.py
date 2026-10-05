@@ -51,10 +51,13 @@ def pct(value: float | None, decimals: int = 1) -> str:
     return f"{text}%"
 
 
+_RUPEE_SUFFIX = re.compile(r"(?<![\w.,])(\d(?:[\d,]*\d)?(?:\.\d+)?)\s*(?:inr|rs\.?|rupees?)\b", re.IGNORECASE)
+
+
 def normalize_money_text(text: str) -> str:
     """Rewrite any "₹20000.0", "Rs. 20,000" or "INR 20000" in free text into `inr()` form."""
 
     def repl(match: re.Match[str]) -> str:
         return inr(float(match.group(1).replace(",", "")))
 
-    return _RUPEE_TEXT.sub(repl, text)
+    return _RUPEE_SUFFIX.sub(repl, _RUPEE_TEXT.sub(repl, text))

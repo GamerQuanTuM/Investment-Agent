@@ -15,6 +15,7 @@ it matches the real security master (exact symbol or company-name search), see
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -23,6 +24,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, ValidationError
 
 from investment_agent.llm.factory import extract_text, get_llm
+from investment_agent.research.chat_guardrails import detect as detect_guardrail
 from investment_agent.research.glossary import (
     GLOSSARY_ALIAS_WORDS,
     asks_for_definition,
@@ -35,9 +37,13 @@ from investment_agent.research.glossary import (
 
 logger = logging.getLogger(__name__)
 
+# A stalled model must never stall the chat: past this the rules decide.
+LLM_TIMEOUT_SECONDS = 10.0
+
 Intent = Literal[
     "education",
     "compare",
+    "guardrail",
     "stock_list",
     "stock_single",
     "plan_sip_fund",
@@ -56,6 +62,7 @@ Experience = Literal["beginner", "intermediate"]
 INTENTS: tuple[str, ...] = (
     "education",
     "compare",
+    "guardrail",
     "stock_list",
     "stock_single",
     "plan_sip_fund",
@@ -497,6 +504,9 @@ _START_RE = re.compile(
 )
 
 
+_INVEST_VERB_RE = re.compile(r"\b(invest|investing|investment|put|park|deploy|grow)\b", re.IGNORECASE)
+
+
 def _has_finance_word(text: str) -> bool:
     return _FINANCE_RE.search(text) is not None
 
@@ -516,6 +526,8 @@ def rule_intent(
     defines = asks_for_definition(t)
     term = find_term(message)
 
+    if detect_guardrail(message):
+        return "guardrail"
     if _is_comparison(message, symbols):
         return "compare"
     if last_asked and len(words) <= 6 and not defines and not _NEW_REQUEST_RE.search(t):
@@ -551,6 +563,8 @@ def rule_intent(
         return "plan_sip_fund"
     if symbols.symbol or symbols.candidates or re.search(r"\b(stock|share|buy|sell)\b", t):
         return "stock_single"
+    if slots.amount_inr and _INVEST_VERB_RE.search(t):
+        return "plan_sip_fund"  # "I have 50000, how should I invest it?" -> a fund plan
     if defines and _has_finance_word(t):
         return "education"
     if _has_finance_word(t):
@@ -566,6 +580,7 @@ _LLM_PROMPT = """You label messages sent to an Indian investing assistant. Reply
 
 Intent meanings:
 education - asks what ONE finance term or concept means (ETF, SIP, P/E, NAV, ELSS, demat) or how the market works
+guardrail - asks for a price prediction, a target price, a guarantee, or about emergency money needed soon
 compare - asks the difference between TWO finance terms or products ("ETF vs mutual fund", "SIP or lump sum, which is better")
 stock_list - wants SEVERAL stocks suggested for an amount ("10 stocks for 10000 rupees")
 stock_single - asks about ONE named stock
@@ -592,13 +607,16 @@ def _parse_llm_json(raw: str) -> _LLMReply | None:
 async def _llm_extract(message: str, last_asked: str | None, has_prior_plan: bool) -> _LLMReply | None:
     try:
         model = get_llm("cheap")
-        reply = await model.ainvoke(
-            _LLM_PROMPT.format(
-                intents=" | ".join(INTENTS),
-                pending=last_asked or "none",
-                plan=has_prior_plan,
-                message=json.dumps(message),
-            )
+        reply = await asyncio.wait_for(
+            model.ainvoke(
+                _LLM_PROMPT.format(
+                    intents=" | ".join(INTENTS),
+                    pending=last_asked or "none",
+                    plan=has_prior_plan,
+                    message=json.dumps(message),
+                )
+            ),
+            timeout=LLM_TIMEOUT_SECONDS,
         )
         parsed = _parse_llm_json(extract_text(reply.content))
         if parsed is None:
@@ -654,7 +672,8 @@ async def extract(
     intent: Intent = rule
     source: Literal["llm", "rules"] = "rules"
     # A short reply to our own pending question is unambiguous: skip the model entirely.
-    if rule != "answer":
+    # Fixed-answer intents are decided by the rules alone: no model call, no added latency.
+    if rule not in ("answer", "guardrail", "compare"):
         llm = await _llm_extract(message, last_asked, has_prior_plan)
         if llm is not None:
             source = "llm"
