@@ -27,13 +27,17 @@ from investment_agent.research.glossary import (
     GLOSSARY_ALIAS_WORDS,
     asks_for_definition,
     find_term,
+    find_terms,
     is_bare_term,
+    resolve_concept,
+    split_comparison_sides,
 )
 
 logger = logging.getLogger(__name__)
 
 Intent = Literal[
     "education",
+    "compare",
     "stock_list",
     "stock_single",
     "plan_sip_fund",
@@ -51,6 +55,7 @@ Experience = Literal["beginner", "intermediate"]
 
 INTENTS: tuple[str, ...] = (
     "education",
+    "compare",
     "stock_list",
     "stock_single",
     "plan_sip_fund",
@@ -73,6 +78,8 @@ class Slots(BaseModel):
     stock_count_min: int | None = Field(default=None, ge=1, le=50)
     symbol: str | None = None
     concept: str | None = None
+    term_a: str | None = None
+    term_b: str | None = None
     experience_level: Experience | None = None
     sectors_wanted: list[str] = Field(default_factory=list)
 
@@ -346,6 +353,45 @@ def _amount_kind(text: str, *, has_amount: bool, last_asked: str | None) -> str 
     return None
 
 
+def _side_name(side: str) -> str:
+    concept = resolve_concept(side)
+    if concept is not None:
+        return concept.label
+    entries = find_terms(side)
+    return entries[0].term if entries else side[:60]
+
+
+def comparison_terms(message: str) -> list[str] | None:
+    """Names of the things being compared ("ETF", "Mutual fund") when the message is phrased as
+    a comparison, resolved against the glossary where possible."""
+    sides = split_comparison_sides(message)
+    return [_side_name(side) for side in sides] if sides else None
+
+
+_EXPLICIT_COMPARE_RE = re.compile(
+    r"\b(difference|differences|compare|comparison|differ|different|vs|versus|v/s)\b|which\s+(?:one\s+)?is\s+better",
+    re.IGNORECASE,
+)
+
+
+def _is_comparison(message: str, symbols: SymbolMatch) -> bool:
+    """A comparison of two finance terms. "X or Y" must name two terms we know; an explicit
+    "difference between"/"vs" with a term we do not know still counts (it goes to the guarded
+    model) unless it names real securities, which are not compared here."""
+    sides = split_comparison_sides(message)
+    if not sides:
+        return False
+    known = [bool(resolve_concept(side) or find_terms(side)) for side in sides]
+    explicit = _EXPLICIT_COMPARE_RE.search(message) is not None
+    if not explicit and (re.search(r"\d", message) or _NEW_REQUEST_RE.search(message.lower())):
+        return False  # "suggest stocks or funds for 10000" is a request, not a comparison
+    if all(known):
+        return True
+    if symbols.symbol or symbols.candidates or not explicit:
+        return False
+    return any(known) or _has_finance_word(message.lower())
+
+
 def extract_slots(message: str, last_asked: str | None = None) -> Slots:
     """Deterministic slot filling. Every number is read from the user's own text."""
     text = message.lower().strip()
@@ -399,6 +445,9 @@ def extract_slots(message: str, last_asked: str | None = None) -> Slots:
     term = find_term(message)
     if term is not None:
         values["concept"] = term.term
+    sides = comparison_terms(message)
+    if sides:
+        values["term_a"], values["term_b"] = sides[0], sides[1]
     return Slots(**values)
 
 
@@ -467,6 +516,8 @@ def rule_intent(
     defines = asks_for_definition(t)
     term = find_term(message)
 
+    if _is_comparison(message, symbols):
+        return "compare"
     if last_asked and len(words) <= 6 and not defines and not _NEW_REQUEST_RE.search(t):
         return "answer"
     if _OFF_TOPIC_RE.search(t) and not _has_finance_word(t):
@@ -511,10 +562,11 @@ def rule_intent(
 
 _LLM_PROMPT = """You label messages sent to an Indian investing assistant. Reply with ONE JSON object and nothing else.
 
-{{"intent": <one of {intents}>, "slots": {{"amount_inr": number|null, "amount_kind": "lump_sum"|"monthly"|null, "horizon_years": integer|null, "risk_profile": "conservative"|"moderate"|"aggressive"|null, "stock_count": integer|null, "stock_count_min": integer|null, "symbol": string|null, "concept": string|null, "experience_level": "beginner"|"intermediate"|null, "sectors_wanted": [string]}}}}
+{{"intent": <one of {intents}>, "slots": {{"amount_inr": number|null, "amount_kind": "lump_sum"|"monthly"|null, "horizon_years": integer|null, "risk_profile": "conservative"|"moderate"|"aggressive"|null, "stock_count": integer|null, "stock_count_min": integer|null, "symbol": string|null, "concept": string|null, "term_a": string|null, "term_b": string|null, "experience_level": "beginner"|"intermediate"|null, "sectors_wanted": [string]}}}}
 
 Intent meanings:
-education - asks what a finance term or concept means (ETF, SIP, P/E, NAV, ELSS, demat) or how the market works
+education - asks what ONE finance term or concept means (ETF, SIP, P/E, NAV, ELSS, demat) or how the market works
+compare - asks the difference between TWO finance terms or products ("ETF vs mutual fund", "SIP or lump sum, which is better")
 stock_list - wants SEVERAL stocks suggested for an amount ("10 stocks for 10000 rupees")
 stock_single - asks about ONE named stock
 plan_sip_fund - wants a monthly mutual fund plan; plan_sip_etf - wants an ETF plan
@@ -576,6 +628,10 @@ def _merge_slots(rule: Slots, llm: Slots, message: str) -> Slots:
     for name in ("amount_kind", "risk_profile", "experience_level", "concept"):
         if getattr(merged, name) is None and getattr(llm, name) is not None:
             setattr(merged, name, getattr(llm, name))
+    for name in ("term_a", "term_b"):  # only a hint: the answer re-resolves both from the message
+        value = getattr(llm, name)
+        if getattr(merged, name) is None and isinstance(value, str) and 0 < len(value) <= 60:
+            setattr(merged, name, value)
     if not merged.sectors_wanted and llm.sectors_wanted:
         merged.sectors_wanted = [s.lower() for s in llm.sectors_wanted][:3]
     return merged
@@ -612,6 +668,8 @@ async def extract(
             # for several stocks must never collapse into "which one company?", and a
             # clearly financial message must not be waved off as unclear/off-topic.
             if intent == "stock_single" and rule in ("stock_list", "education"):
+                intent = rule
+            if rule == "compare":  # a model that collapses "A vs B" into one definition is wrong
                 intent = rule
             if intent in ("unclear", "off_topic") and rule not in ("unclear", "answer", "off_topic"):
                 intent = rule

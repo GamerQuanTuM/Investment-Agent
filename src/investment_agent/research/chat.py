@@ -537,6 +537,8 @@ def _start_flow(state: dict[str, Any], ex: Extraction) -> None:
 def _apply_slots(state: dict[str, Any], ex: Extraction) -> None:
     provided = ex.slots.provided()
     provided.pop("concept", None)
+    provided.pop("term_a", None)
+    provided.pop("term_b", None)
     # A bare number typed in answer to "how much every month?" is the monthly amount.
     answering_monthly = state.get("last_asked") == "amount" and state.get("intent") in SIP_FLOWS
     state["slots"].update(provided)
@@ -622,6 +624,14 @@ async def _dispatch(
             suggestions=answer["suggestions"],
             sources=answer["sources"],
             **({"glossary": answer["glossary"]} if "glossary" in answer else {}),
+        )
+    if intent == "compare":
+        answer = await education.compare(message, ex.slots.term_a, ex.slots.term_b)
+        return intent, _body(
+            answer["text"],
+            suggestions=answer["suggestions"],
+            sources=answer["sources"],
+            **({"comparison": answer["comparison"]} if "comparison" in answer else {}),
         )
     if intent == "market_overview":
         return intent, await chat_market.market_overview_reply()

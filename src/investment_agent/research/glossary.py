@@ -278,3 +278,549 @@ def entry_by_term(term: str) -> GlossaryEntry | None:
         if entry.term.lower() == key or key in entry.aliases:
             return entry
     return None
+
+
+# --------------------------------------------------------------------------- comparisons
+#
+# "What is the difference between X and Y?" Curated side-by-side tables for the comparisons
+# beginners ask most, written once and reviewed like the definitions above: no prices, returns,
+# fees or tax rates, only how the two things work. Every cell comes from the per-concept profile
+# below, so the same wording is used wherever a concept appears.
+
+COMPARISON_ROWS = (
+    "How you buy",
+    "Needs a demat account",
+    "Minimum amount",
+    "Costs",
+    "Who it suits",
+    "Main risk",
+)
+
+_SMALL_AMOUNTS = "Small amounts are allowed, so you can start modestly."
+
+
+@dataclass(frozen=True)
+class Concept:
+    key: str
+    label: str
+    aliases: tuple[str, ...]
+    glossary_term: str | None
+    profile: tuple[str, str, str, str, str, str]  # one cell per COMPARISON_ROWS entry
+
+
+CONCEPTS: tuple[Concept, ...] = (
+    Concept(
+        "etf",
+        "ETF",
+        ("etf", "etfs", "exchange traded fund", "exchange-traded fund"),
+        "ETF",
+        (
+            "On the stock exchange through your broker, like a share, any time the market is open.",
+            "Yes.",
+            "The price of one unit.",
+            "A low yearly fund fee, plus your broker's charges each time you buy or sell.",
+            "People who already have a demat account and want a cheap, ready-made basket of companies.",
+            "Moves with the market it copies, and the price you pay can differ slightly from the basket's true value.",
+        ),
+    ),
+    Concept(
+        "mutual fund",
+        "Mutual fund",
+        ("mutual fund", "mutual funds", "normal mutual fund", "normal fund", "regular mutual fund", "mf"),
+        "Mutual fund",
+        (
+            "Directly from the fund company or through an app, at the day's NAV. A monthly SIP works.",
+            "No.",
+            _SMALL_AMOUNTS,
+            "A yearly fund fee (higher when a manager picks stocks); no brokerage when you buy direct.",
+            "Beginners who want a professional or index-based mix without a demat account.",
+            "Its value rises and falls with what it holds, and a manager-run fund can do worse than the market.",
+        ),
+    ),
+    Concept(
+        "sip",
+        "SIP",
+        ("sip", "sips", "systematic investment plan", "monthly investing"),
+        "SIP",
+        (
+            "A fixed amount goes into a fund automatically on a set date every month.",
+            "Not for mutual funds (a SIP into shares or ETFs does need one).",
+            _SMALL_AMOUNTS,
+            "The same fund fees as investing in one go; using a SIP costs nothing extra.",
+            "Anyone who earns monthly and wants a steady habit without timing the market.",
+            "The market can fall right after you invest. A SIP spreads your buying but does not remove losses.",
+        ),
+    ),
+    Concept(
+        "lump sum",
+        "Lump sum",
+        ("lump sum", "lumpsum", "lump-sum", "one time investment", "one-time investment", "one time", "one-time"),
+        None,
+        (
+            "You invest the whole amount in one go, on one day.",
+            "Not for mutual funds.",
+            "Whatever you have available, paid at once.",
+            "The same fund fees; investing all at once costs nothing extra.",
+            "People who already hold a sum (a bonus or savings) and can stay invested through a fall.",
+            "If the market falls soon after, all of your money feels it, so the day you start matters more.",
+        ),
+    ),
+    Concept(
+        "index fund",
+        "Index fund",
+        ("index fund", "index funds", "index mutual fund"),
+        "Index fund",
+        (
+            "Like any mutual fund: directly or through an app, at the day's NAV.",
+            "No.",
+            _SMALL_AMOUNTS,
+            "A very low yearly fee, because no manager is picking stocks.",
+            "Beginners who simply want the market's average result.",
+            "It falls when its index falls, and it only ever copies the index, never beats it.",
+        ),
+    ),
+    Concept(
+        "active fund",
+        "Actively managed fund",
+        ("active fund", "active funds", "actively managed fund", "actively managed", "active mutual fund", "active"),
+        None,
+        (
+            "Like any mutual fund: directly or through an app, at the day's NAV.",
+            "No.",
+            _SMALL_AMOUNTS,
+            "A higher yearly fee, because a manager and research team pick the stocks.",
+            "People who want a chance to beat the market and accept paying more for it.",
+            "The manager's picks can lag the market, and past outperformance may not repeat.",
+        ),
+    ),
+    Concept(
+        "direct plan",
+        "Direct plan",
+        ("direct plan", "direct plans", "direct"),
+        None,
+        (
+            "Straight from the fund company or an app that takes no commission.",
+            "No.",
+            _SMALL_AMOUNTS,
+            "A lower yearly fee, because no distributor commission is built in.",
+            "Investors comfortable choosing a fund themselves.",
+            "No adviser guides you, so a poor fund choice is yours alone. The portfolio itself is identical.",
+        ),
+    ),
+    Concept(
+        "regular plan",
+        "Regular plan",
+        ("regular plan", "regular plans", "regular"),
+        None,
+        (
+            "Through a distributor, bank or agent who is paid a commission by the fund.",
+            "No.",
+            _SMALL_AMOUNTS,
+            "A higher yearly fee, because the distributor's commission is included.",
+            "People who want hand-holding and are happy to pay for it.",
+            "The extra fee trims your result every year, with exactly the same investments underneath.",
+        ),
+    ),
+    Concept(
+        "growth option",
+        "Growth option",
+        ("growth option", "growth plan", "growth"),
+        None,
+        (
+            "The same fund; you pick \"Growth\" when you invest.",
+            "No.",
+            "The same as the fund itself.",
+            "The same fund fees.",
+            "Long-term investors who do not need regular payouts.",
+            "No regular income: to get cash you have to sell units.",
+        ),
+    ),
+    Concept(
+        "idcw option",
+        "IDCW (dividend) option",
+        ("idcw", "idcw option", "idcw plan", "dividend option", "dividend plan", "payout option"),
+        None,
+        (
+            "The same fund; you pick \"IDCW\" (income distribution cum capital withdrawal) when you invest.",
+            "No.",
+            "The same as the fund itself.",
+            "The same fund fees, and payouts may be taxed in your hands each time (check current rules).",
+            "People who want occasional payouts from the fund.",
+            "Payouts are not guaranteed and come out of the fund's value, so its NAV drops by what is paid out.",
+        ),
+    ),
+    Concept(
+        "large cap",
+        "Large cap",
+        ("large cap", "large-cap", "large caps", "large cap fund", "large"),
+        "Large cap",
+        (
+            "Through shares, an index fund or a large-cap fund.",
+            "Only if you buy the shares or an ETF directly; funds do not need one.",
+            "Small amounts through a fund, or one share's price directly.",
+            "Large-cap and index funds tend to charge less.",
+            "Beginners and anyone who wants steadier ups and downs.",
+            "Slower growth than smaller companies in good phases, and it can still fall.",
+        ),
+    ),
+    Concept(
+        "mid cap",
+        "Mid cap",
+        ("mid cap", "mid-cap", "midcap", "mid caps", "mid cap fund", "mid"),
+        "Mid cap",
+        (
+            "Through shares or a mid-cap fund.",
+            "Only if you buy the shares directly; funds do not need one.",
+            "Small amounts through a fund, or one share's price directly.",
+            "Fund fees are usually higher than for large-cap funds.",
+            "Investors with a long horizon who can accept bigger swings.",
+            "Falls harder than large caps in bad phases.",
+        ),
+    ),
+    Concept(
+        "small cap",
+        "Small cap",
+        ("small cap", "small-cap", "smallcap", "small caps", "small cap fund", "small"),
+        "Small cap",
+        (
+            "Through shares or a small-cap fund.",
+            "Only if you buy the shares directly; funds do not need one.",
+            "Small amounts through a fund, or one share's price directly.",
+            "Fund fees are usually higher, and buying or selling a share can cost you in price.",
+            "Experienced investors with a long horizon who can stomach big swings.",
+            "The biggest swings, and shares can be hard to sell quickly in a fall.",
+        ),
+    ),
+    Concept(
+        "stocks",
+        "Stocks",
+        ("stocks", "stock", "shares", "share", "direct stocks", "direct stock", "equity shares", "individual stocks"),
+        "Share (stock)",
+        (
+            "Shares of single companies on the exchange, through your broker.",
+            "Yes.",
+            "The price of one share.",
+            "Brokerage and demat charges on each trade; there is no fund fee.",
+            "People ready to research companies and keep watching them.",
+            "One company's bad news can hurt a lot, and spreading your money across many is up to you.",
+        ),
+    ),
+    Concept(
+        "elss",
+        "ELSS",
+        ("elss", "tax saving fund", "tax saver fund", "tax saving mutual fund"),
+        "ELSS",
+        (
+            "Like a mutual fund: directly or through an app, as a lump sum or a SIP.",
+            "No.",
+            _SMALL_AMOUNTS,
+            "Normal equity-fund fees.",
+            "People who want to save tax under Section 80C and can lock the money away.",
+            "Money is locked for 3 years and can fall in value. Tax rules change, so check the current ones.",
+        ),
+    ),
+    Concept(
+        "equity fund",
+        "Equity fund",
+        (
+            "equity fund",
+            "equity funds",
+            "normal equity fund",
+            "equity mutual fund",
+            "equity mutual funds",
+            "equity",
+        ),
+        None,
+        (
+            "Like any mutual fund: directly or through an app, as a lump sum or a SIP.",
+            "No.",
+            _SMALL_AMOUNTS,
+            "A yearly fund fee, usually higher than for a debt fund.",
+            "Goals that are many years away, where bigger ups and downs are acceptable.",
+            "Bigger swings than a debt fund, and nothing is guaranteed. No lock-in and no special tax saving.",
+        ),
+    ),
+    Concept(
+        "debt fund",
+        "Debt fund",
+        ("debt fund", "debt funds", "debt mutual fund", "bond fund", "debt"),
+        None,
+        (
+            "Like any mutual fund: directly or through an app, as a lump sum or a SIP.",
+            "No.",
+            _SMALL_AMOUNTS,
+            "A yearly fund fee, usually lower than for an equity fund.",
+            "Shorter goals, and the steadier part of a portfolio.",
+            "Not guaranteed: rising interest rates or a borrower in trouble can lower its value.",
+        ),
+    ),
+    Concept(
+        "fd",
+        "Fixed deposit",
+        ("fd", "fds", "fixed deposit", "fixed deposits", "bank fd"),
+        None,
+        (
+            "At a bank or through its app: a fixed amount for a fixed time.",
+            "No.",
+            "The bank sets a small minimum.",
+            "No fee, but taking the money out early usually carries a penalty.",
+            "People who want certainty and can leave the money alone for the full term.",
+            "The return is fixed upfront and can fail to keep up with rising prices. Interest is taxed as income.",
+        ),
+    ),
+)
+
+_CONCEPT_BY_KEY = {concept.key: concept for concept in CONCEPTS}
+
+_BEGINNER_CHIPS = ("Plan a SIP in a mutual fund", "What is NAV?")
+_STOCK_CHIPS = ("Suggest 10 stocks for ₹10,000", "Plan a SIP in a mutual fund")
+
+# keys (order irrelevant) -> the one-line "which is simpler for a beginner"
+_CURATED: tuple[tuple[tuple[str, ...], str], ...] = (
+    (
+        ("etf", "mutual fund"),
+        ("For a beginner a normal mutual fund (especially an index fund) is usually simpler: no demat "
+        "account, and a SIP buys for you every month. An ETF suits you once you have a demat account."),
+    ),
+    (
+        ("sip", "lump sum"),
+        ("A SIP is usually simpler for a beginner: small monthly amounts, and no need to pick the "
+        "right day. A lump sum only makes sense if you already have the money and can stay put "
+        "through a fall."),
+    ),
+    (
+        ("index fund", "active fund"),
+        ("An index fund is usually simpler: low fees and no manager to judge. An active fund adds the "
+        "chance of beating the market and the chance of lagging it."),
+    ),
+    (
+        ("direct plan", "regular plan"),
+        ("Direct is the cheaper way to hold the same fund and is easy through a good app. Regular is "
+        "simpler only if you want someone to guide you and accept the extra yearly fee."),
+    ),
+    (
+        ("growth option", "idcw option"),
+        ("Growth is usually simpler: nothing to track and no payouts to reinvest. Choose IDCW only if "
+        "you really want occasional payouts."),
+    ),
+    (
+        ("large cap", "mid cap", "small cap"),
+        ("Large cap is usually the simplest starting point. Add mid or small caps later, in small "
+        "slices, once you are comfortable with bigger swings."),
+    ),
+    (
+        ("large cap", "mid cap"),
+        "Large cap is usually simpler and steadier. Mid cap adds growth potential and bigger swings.",
+    ),
+    (
+        ("mid cap", "small cap"),
+        "Mid cap is the gentler of the two. Small cap suits only a long horizon and a strong stomach.",
+    ),
+    (
+        ("large cap", "small cap"),
+        "Large cap is far simpler for a beginner. Small cap swings much more and can be hard to sell.",
+    ),
+    (
+        ("stocks", "mutual fund"),
+        ("A mutual fund is usually simpler for a beginner: a ready-made spread of companies and no "
+        "research needed. Stocks suit people ready to follow individual companies."),
+    ),
+    (
+        ("elss", "equity fund"),
+        ("A normal equity fund is simpler because there is no lock-in. ELSS only makes sense if you "
+        "want the Section 80C tax saving and can lock the money for 3 years."),
+    ),
+    (
+        ("fd", "mutual fund"),
+        ("An FD is simplest to understand because its return is fixed upfront. A mutual fund suits "
+        "longer goals where you can accept ups and downs."),
+    ),
+    (
+        ("equity fund", "debt fund"),
+        ("A debt fund is simpler to live with (smaller swings). An equity fund is for goals that are "
+        "many years away."),
+    ),
+    (
+        ("etf", "index fund"),
+        ("An index fund is usually simpler: you buy it like any mutual fund with no demat account. "
+        "An ETF tracks the same kind of index but trades on the exchange."),
+    ),
+)
+_CURATED_BY_KEYS = {frozenset(keys): (keys, takeaway) for keys, takeaway in _CURATED}
+
+
+@dataclass(frozen=True)
+class Comparison:
+    title: str
+    columns: tuple[str, ...]
+    rows: tuple[tuple[str, ...], ...]  # (label, cell for each column)
+    takeaway: str
+    curated: bool
+    suggestions: tuple[str, ...] = _BEGINNER_CHIPS
+
+    def as_dict(self) -> dict[str, object]:
+        letters = "abc"
+        return {
+            "title": self.title,
+            "columns": list(self.columns),
+            "rows": [
+                {"label": row[0], **{letters[i]: cell for i, cell in enumerate(row[1:])}} for row in self.rows
+            ],
+            "takeaway": self.takeaway,
+        }
+
+    def as_text(self) -> str:
+        lines = [self.title, ""]
+        for row in self.rows:
+            lines.append(row[0])
+            lines.extend(f"- {column}: {cell}" for column, cell in zip(self.columns, row[1:], strict=True))
+        lines.extend(["", f"Which is simpler for a beginner? {self.takeaway}"])
+        return "\n".join(lines)
+
+
+def _concept_pattern(alias: str) -> re.Pattern[str]:
+    return re.compile(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])")
+
+
+_CONCEPT_ALIASES: list[tuple[str, Concept, re.Pattern[str]]] = sorted(
+    ((alias, concept, _concept_pattern(alias)) for concept in CONCEPTS for alias in concept.aliases),
+    key=lambda item: -len(item[0]),
+)
+
+
+def resolve_concept(side: str) -> Concept | None:
+    """The curated concept a phrase like "normal mutual fund" or "IDCW/dividend option" names
+    (longest alias wins), or None."""
+    lowered = side.lower().strip()
+    for _alias, concept, pattern in _CONCEPT_ALIASES:
+        if pattern.search(lowered):
+            return concept
+    return None
+
+
+def find_terms(text: str) -> list[GlossaryEntry]:
+    """Every glossary entry mentioned in `text`, in the order it appears. Longer aliases win
+    over the shorter ones inside them ("index mutual fund" is one term, not "mutual fund")."""
+    lowered = text.lower().strip()
+    taken: list[tuple[int, int]] = []
+    found: list[tuple[int, GlossaryEntry]] = []
+    for alias, entry, pattern in _ALIAS_INDEX:
+        match = pattern.search(lowered)
+        if match is None:
+            continue
+        if alias in _GENERIC_ALIASES and not re.fullmatch(
+            rf"{_EDU_LEADS}\s+(?:a|an|the)?\s*{re.escape(alias)}\s*[?.!]*", lowered
+        ):
+            continue
+        if any(match.start() < end and start < match.end() for start, end in taken):
+            continue
+        if any(existing is entry for _, existing in found):
+            continue
+        taken.append((match.start(), match.end()))
+        found.append((match.start(), entry))
+    return [entry for _, entry in sorted(found, key=lambda item: item[0])]
+
+
+_SIDE = r"([^?.!]+?)"
+_COMPARE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(rf"\bdifferences?\s+(?:between|of)\s+{_SIDE}\s+(?:and|&|vs\.?|versus|or)\s+{_SIDE}\s*[?.!]*$"),
+    re.compile(rf"\bcompar(?:e|ing|ison)\s+(?:of\s+|between\s+)?{_SIDE}\s+(?:and|with|to|vs\.?|versus|&)\s+{_SIDE}\s*[?.!]*$"),
+    re.compile(rf"\bhow\s+(?:is|are|does)\s+{_SIDE}\s+(?:different|differ|compare)\s+(?:from|to|than|with)\s+{_SIDE}\s*[?.!]*$"),
+    re.compile(rf"\bwhich\s+(?:one\s+)?is\s+(?:better|safer|good|best)[,:]?\s+{_SIDE}\s+or\s+{_SIDE}\s*[?.!]*$"),
+    re.compile(rf"^(?:is\s+|are\s+|should\s+i\s+(?:choose|pick|buy|invest\s+in)\s+)?{_SIDE}\s+or\s+{_SIDE}[,;]?\s*(?:which\s+(?:one\s+)?is\s+(?:better|safer|good|best)|is\s+better|better|safer)?\s*[?.!]*$"),
+    re.compile(rf"^{_SIDE}\s+(?:vs\.?|versus|v/s)\s+{_SIDE}\s*[?.!]*$"),
+    re.compile(rf"\b{_SIDE}\s+(?:vs\.?|versus|v/s)\s+{_SIDE}\s*[?.!]*$"),
+)
+_LEADING_FILLER = re.compile(r"^(?:the|a|an|my|what\s+is|whats|what's)\s+", re.IGNORECASE)
+
+
+def _clean_side(side: str) -> str:
+    side = side.strip(" ,;:-")
+    while True:
+        stripped = _LEADING_FILLER.sub("", side)
+        if stripped == side:
+            return side
+        side = stripped
+
+
+def split_comparison_sides(text: str) -> list[str] | None:
+    """The two (or three, for "large vs mid vs small cap") things being compared, if the
+    message is phrased as a comparison. Only the phrasing is checked here."""
+    lowered = " ".join(text.lower().split())
+    for pattern in _COMPARE_PATTERNS:
+        match = pattern.search(lowered)
+        if match is None:
+            continue
+        sides: list[str] = []
+        for group in (match.group(1), match.group(2)):
+            # "large vs mid vs small cap": one capture can hold a further "vs".
+            sides.extend(_clean_side(part) for part in re.split(r"\s+(?:vs\.?|versus|v/s)\s+", group))
+        sides = [side for side in sides if side]
+        if 2 <= len(sides) <= 3:
+            return sides
+    return None
+
+
+def _definition_comparison(
+    sides: list[str],
+) -> Comparison | None:
+    """Both terms are in the glossary but have no curated table: set the two definitions and
+    examples side by side. Deterministic, so it can hold no invented figure."""
+    entries: list[GlossaryEntry] = []
+    for side in sides:
+        concept = resolve_concept(side)
+        entry = entry_by_term(concept.glossary_term) if concept and concept.glossary_term else None
+        if entry is None:
+            entry = find_term(side)
+        if entry is None:
+            matches = find_terms(side)
+            entry = matches[0] if matches else None
+        if entry is None or any(entry is existing for existing in entries):
+            return None
+        entries.append(entry)
+    if len(entries) != 2:
+        return None
+    first, second = entries
+    return Comparison(
+        title=f"{first.term} vs {second.term}",
+        columns=(first.term, second.term),
+        rows=(
+            ("What it is", first.definition, second.definition),
+            ("Example", first.example, second.example),
+        ),
+        takeaway=(
+            "They describe different things, so read each definition on its own; "
+            "ask about either one for more detail."
+        ),
+        curated=False,
+        suggestions=(f"What is {first.term}?", f"What is {second.term}?"),
+    )
+
+
+def compare_terms(sides: list[str]) -> Comparison | None:
+    """A curated table when we have one, else one composed from the glossary definitions,
+    else None (the caller falls back to the guarded model, or says it cannot)."""
+    concepts = [resolve_concept(side) for side in sides]
+    if all(concepts):
+        resolved = [concept for concept in concepts if concept is not None]
+        keys = [concept.key for concept in resolved]
+        if len(set(keys)) == len(keys):
+            curated = _CURATED_BY_KEYS.get(frozenset(keys))
+            if curated is not None:
+                _, takeaway = curated
+                title = " vs ".join(concept.label for concept in resolved)
+                stock_pair = "stocks" in keys
+                return Comparison(
+                    title=title,
+                    columns=tuple(concept.label for concept in resolved),
+                    rows=tuple(
+                        (label, *(concept.profile[index] for concept in resolved))
+                        for index, label in enumerate(COMPARISON_ROWS)
+                    ),
+                    takeaway=takeaway,
+                    curated=True,
+                    suggestions=_STOCK_CHIPS if stock_pair else _BEGINNER_CHIPS,
+                )
+    if len(sides) == 2:
+        return _definition_comparison(sides)
+    return None

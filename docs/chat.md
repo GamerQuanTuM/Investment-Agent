@@ -16,9 +16,10 @@ message ─► chat_intent.extract ─► intent + slots ─► handler ─► r
 | Intent | Meaning | Handler |
 |---|---|---|
 | `education` | "what is an ETF / SIP / P/E / NAV / ELSS / demat", "how does the market work" | `research/education.py` |
+| `compare` | "difference between ETF and mutual fund", "SIP vs lump sum", "ETF or index fund" | `research/education.compare` → `research/glossary.py` |
 | `stock_list` | "give me N stocks for ₹X" | `research/stock_list_chat.py` → `portfolio/stock_picker.py` |
 | `stock_single` | a named stock ("should I buy TCS") | `research/guidance.py` (asks horizon + amount if missing) |
-| `plan_sip_fund` | monthly mutual-fund plan | `research/sip.suggest_mix` |
+| `plan_sip_fund` | mutual-fund plan, monthly or one-time | `research/sip.suggest_mix` / `suggest_lump_sum` |
 | `plan_sip_etf` | monthly ETF plan | `research/sip.build_etf_sip` |
 | `fund_list` | "name some mutual funds" | `research/sip.rank_funds` |
 | `market_overview` | "how is the market today" | `research/chat_market.py` |
@@ -29,7 +30,7 @@ message ─► chat_intent.extract ─► intent + slots ─► handler ─► r
 
 **Slots:** `amount_inr`, `amount_kind` (`lump_sum`/`monthly`), `horizon_years`,
 `risk_profile`, `stock_count` (+ `stock_count_min` for ranges such as "10-12"), `symbol`,
-`concept`, `experience_level` (`beginner`/`intermediate`), `sectors_wanted`.
+`concept`, `term_a` / `term_b` (the two things in a comparison), `experience_level` (`beginner`/`intermediate`), `sectors_wanted`.
 A message that carries several slots fills them all at once and nothing already given is
 re-asked. Defaults: horizon 5 years, risk moderate (large-cap-heavy for a beginner who did
 not choose), 10 stocks, clamped to 3-15.
@@ -151,6 +152,34 @@ cheap model under a system prompt that forbids prices, returns, tickers and reco
 a mechanical check discards any reply containing digits, currency, tickers or advice, and the
 user then gets the list of terms we can explain.
 
+### Comparisons (`compare`)
+
+`chat_intent` recognises "difference between X and Y", "X vs Y", "compare X and Y", "how is X
+different from Y" and "X or Y, which is better" (the bare "X or Y" form only when both sides are
+terms we know, and never when the message is a request such as "suggest stocks or funds for
+10000"). It fills `term_a` / `term_b` and the rules win over a model that collapses the question
+into a single definition. `glossary.find_terms()` returns every glossary term in a message in
+order (`find_term()` still returns just one).
+
+`education.compare` answers in three tiers:
+
+1. **Curated table** (`glossary.py`): ETF vs mutual fund, SIP vs lump sum, index vs active fund,
+   direct vs regular plan, growth vs IDCW/dividend option, large vs mid vs small cap (and each
+   pair), stocks vs mutual funds, ELSS vs normal equity fund, FD vs mutual fund, equity vs debt
+   fund, ETF vs index fund. Rows: How you buy, Needs a demat account, Minimum amount, Costs, Who
+   it suits, Main risk, plus a one-line "which is simpler for a beginner". Reviewed text only, no
+   figures that change. Columns follow the order the user asked in.
+2. **Composed from definitions**: both terms are in the glossary but there is no curated table
+   (for example NAV vs P/E): the two definitions and examples side by side.
+3. **Guarded model** for a term outside the glossary: same restricted prompt and mechanical check
+   as `education` (no digits, currency, tickers or advice), else an honest "I don't have a
+   reviewed comparison for those two yet".
+
+The reply adds `comparison: {title, columns, rows: [{label, a, b, c?}], takeaway}` (`c` only for
+the three-way cap table). The chat UI renders it as `ComparisonCard`: a table from tablet width,
+stacked rows on a phone. Chips: "Plan a SIP in a mutual fund", "What is NAV?" (stock pairs offer
+"Suggest 10 stocks for ₹10,000").
+
 ## Response contract
 
 ```jsonc
@@ -162,6 +191,7 @@ user then gets the list of terms we can explain.
   "sources": [ /* Evidence: claim, source_name, source_url, source_type, data_date */ ],
   "stock_plan": { "rows": [], "total_invested": 0, "leftover": 0, "data_as_of": "YYYY-MM-DD",
                   "caveats": [], "reality_check": "…", "sector_split": [], "disclaimer": "…" },
+  "comparison": { "title", "columns": ["A","B"], "rows": [{ "label", "a", "b" }], "takeaway" },
   "plan": { "kind": "monthly" | "lump_sum", "title": "₹50,000 one-time", "sleeves": [], "spread_option": {} },
   "assumed": { "horizon_years": 5, "risk_profile": "moderate" },   // only when defaults were assumed
   "guidance": {}, "ranking": [], "glossary": { "term", "definition", "example" },

@@ -17,7 +17,16 @@ from typing import Any
 from investment_agent.llm.factory import extract_text, get_llm
 from investment_agent.research.evidence import Evidence, SourceType
 from investment_agent.research.formatting import inr
-from investment_agent.research.glossary import GLOSSARY, GlossaryEntry, entry_by_term, find_term
+from investment_agent.research.glossary import (
+    GLOSSARY,
+    Comparison,
+    GlossaryEntry,
+    compare_terms,
+    entry_by_term,
+    find_term,
+    find_terms,
+    split_comparison_sides,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +143,81 @@ async def explain(message: str, concept: str | None, amount_inr: float | None) -
             f"I can explain terms such as {known}. Which would you like?"
         ),
         "suggestions": _teachable_chips(),
+        "sources": [],
+        "source": "none",
+    }
+
+
+COMPARE_SYSTEM_PROMPT = (
+    "You explain the difference between two investing concepts to someone who has never "
+    "invested, in 4 to 6 short plain sentences with no jargon left unexplained. You must NOT "
+    "mention any price, index level, percentage, return, fee or rupee amount, NOT name any "
+    "company or ticker, and NOT recommend buying, selling or holding anything or promise any "
+    "outcome. If the question is not about how investing or markets work, say you can only "
+    "explain investing concepts."
+)
+
+
+def _comparison_sources(comparison: Comparison) -> list[dict[str, Any]]:
+    name = (
+        "Curated beginner comparison (reviewed text)"
+        if comparison.curated
+        else "Curated beginner glossary (reviewed definitions)"
+    )
+    return [
+        Evidence(
+            claim=f"Comparison: {comparison.title}", source_name=name, source_type=SourceType.OTHER
+        ).model_dump(mode="json")
+    ]
+
+
+async def _llm_compare(message: str) -> str | None:
+    try:
+        model = get_llm("cheap")
+        reply = await model.ainvoke(f"{COMPARE_SYSTEM_PROMPT}\n\nQuestion: {message}")
+        text = extract_text(reply.content).strip()
+    except Exception as exc:
+        logger.info("Comparison model unavailable: %s", exc)
+        return None
+    if not passes_education_check(text):
+        logger.info("Comparison model reply rejected by the content check")
+        return None
+    return text
+
+
+async def compare(message: str, term_a: str | None, term_b: str | None) -> dict[str, Any]:
+    """Answer "difference between X and Y". A curated table when we have one, otherwise one
+    composed from the two glossary definitions, otherwise a guarded model answer; the model
+    never sees or returns prices, returns or tickers. The message is re-parsed here, so the
+    slot values are only a hint if the phrasing was unusual."""
+    sides = split_comparison_sides(message) or [side for side in (term_a, term_b) if side]
+    if len(sides) < 2:
+        sides = [entry.term for entry in find_terms(message)[:2]]
+    comparison = compare_terms(sides) if len(sides) >= 2 else None
+    if comparison is not None:
+        return {
+            "text": comparison.as_text(),
+            "comparison": comparison.as_dict(),
+            "suggestions": list(comparison.suggestions),
+            "sources": _comparison_sources(comparison),
+            "source": "glossary",
+        }
+    text = await _llm_compare(message)
+    if text is not None:
+        return {
+            "text": text,
+            "suggestions": [next_step_chip(None, None), "What is an ETF?"],
+            "sources": [],
+            "source": "llm",
+        }
+    known = [entry.term for entry in find_terms(message)[:2]]
+    chips = [f"What is {term}?" for term in known] or _teachable_chips()
+    return {
+        "text": (
+            "I don't have a reviewed comparison for those two yet, and I'd rather not guess. "
+            "I can explain each one on its own, so ask about either."
+        ),
+        "suggestions": chips,
         "sources": [],
         "source": "none",
     }

@@ -5,6 +5,7 @@ the background sync never raises."""
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -298,3 +299,13 @@ async def test_market_status_reports_sync_fields(monkeypatch: pytest.MonkeyPatch
     assert status["sync_in_progress"] is True
     assert set(status["rows"]) == {"fundamental_snapshots", "daily_bars", "mutual_fund_schemes", "nav_records"}
     assert "watchlist" in status  # existing fields are untouched
+
+
+@pytest.mark.parametrize("llm", ["rules", "mocked"])
+async def test_bug_report_conversation_with_model_mocked_and_unavailable(providers, use_llm, llm):
+    if llm == "mocked":
+        use_llm(json.dumps({"intent": "stock_list", "slots": {"amount_inr": 10000, "stock_count": 10}}))
+    result = await chat.chat_turn(_sid(), MESSAGE)
+    assert result["intent"] == "stock_list"
+    assert result["stock_plan"] is not None
+    assert "isn't loaded" not in result["text"] and "/market" not in result["text"]

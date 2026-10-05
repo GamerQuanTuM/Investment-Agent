@@ -129,7 +129,7 @@ category) rather than erroring. See `docs/data-sources.md` §4 for the data-sour
 
 `POST /research/chat` understands a beginner's own words. A structured intent step (cheap
 model → validated JSON, deterministic rules as fallback) picks one of `education`,
-`stock_list`, `stock_single`, `plan_sip_fund`, `plan_sip_etf`, `fund_list`, `market_overview`,
+`compare`, `stock_list`, `stock_single`, `plan_sip_fund`, `plan_sip_etf`, `fund_list`, `market_overview`,
 `portfolio_help`, `off_topic` or `unclear`, and fills slots (amount, lump sum vs monthly,
 horizon, risk, stock count, experience) from everything said in one message.
 
@@ -137,6 +137,12 @@ horizon, risk, stock count, experience) from everything said in one message.
 curl -s -X POST http://localhost:8000/research/chat -H "Content-Type: application/json"   -d '{"session_id": "demo", "message": "I am new. Suggest 10-12 stocks for 10000 rupees"}'
 curl -s -X POST http://localhost:8000/research/chat -H "Content-Type: application/json"   -d '{"session_id": "demo", "message": "what is an ETF?"}'
 ```
+
+"Difference between ETF and mutual fund" (or "SIP vs lump sum", "ETF or index fund") is a
+`compare` intent: reviewed side-by-side tables, a definition-based comparison for other glossary
+terms, and a guarded model only for terms we don't hold. A one-time amount ("I have 50000 in
+capital") gets a one-time fund allocation with units and an optional spread-over-months SIP, never
+a monthly plan; if the chat can't tell which you mean it asks once.
 
 Tickers only ever come from the stock master in the database, never from the model.
 "N stocks for ₹X" is selected and sized entirely in Python (whole shares, sector and

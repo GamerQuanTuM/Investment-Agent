@@ -15,8 +15,9 @@ import {
   Send,
 } from "lucide-react";
 import { sendChat } from "@/lib/api";
-import { ChatCollected, ChatReply, EvidenceItem, GlossaryEntry, GuidanceNote, StockPlan } from "@/lib/types";
+import { ChatCollected, ChatComparison, ChatReply, EvidenceItem, GlossaryEntry, GuidanceNote, StockPlan } from "@/lib/types";
 import { DataUnavailableTile, StockPlanCard } from "@/components/StockPlanCard";
+import { ComparisonCard } from "@/components/ComparisonCard";
 import { GlossaryCard } from "@/components/GlossaryCard";
 import { SourceChips } from "@/components/SourceChips";
 
@@ -30,6 +31,7 @@ type Bubble = {
   plan?: Plan;
   stockPlan?: StockPlan;
   glossary?: GlossaryEntry;
+  comparison?: ChatComparison;
   sources?: EvidenceItem[];
   suggestions?: string[];
   dataUnavailable?: boolean;
@@ -221,6 +223,7 @@ export default function ChatPage() {
           plan: reply.plan,
           stockPlan: reply.stock_plan ?? undefined,
           glossary: reply.glossary,
+          comparison: reply.comparison,
           sources: reply.sources,
           suggestions: reply.suggestions,
           dataUnavailable: reply.data_status === "DATA_UNAVAILABLE",
@@ -291,7 +294,7 @@ export default function ChatPage() {
         <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto p-4" aria-live="polite">
           {messages.map((message, index) => {
             const isAgent = message.role === "agent";
-            const showText = !(message.glossary && !message.isError);
+            const showText = !((message.glossary || message.comparison) && !message.isError);
             return (
               <div key={`${message.role}-${index}`} className={`flex items-end gap-2 ${isAgent ? "" : "flex-row-reverse"}`}>
                 <span
@@ -317,6 +320,7 @@ export default function ChatPage() {
                       <>
                         {showText && (message.stockPlan ? textBesideStockPlan(message.text) : message.text)}
                         {message.glossary && <GlossaryCard entry={message.glossary} />}
+                        {message.comparison && <ComparisonCard comparison={message.comparison} />}
                       </>
                     )}
                     {message.stockPlan && (

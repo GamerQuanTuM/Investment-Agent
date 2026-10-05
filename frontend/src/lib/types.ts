@@ -442,6 +442,13 @@ export interface GlossaryEntry {
   example: string;
 }
 
+export interface ChatComparison {
+  title: string;
+  columns: string[];
+  rows: { label: string; a: string; b: string; c?: string }[];
+  takeaway: string;
+}
+
 export interface ChatCollected {
   intent: string | null;
   symbol: string | null;
@@ -467,6 +474,7 @@ export interface ChatReply {
   assumed?: { horizon_years: number; risk_profile: string };
   stock_plan?: StockPlan | null;
   glossary?: GlossaryEntry;
+  comparison?: ChatComparison;
   guidance?: GuidanceNote;
   plan?: {
     kind?: "monthly" | "lump_sum";
