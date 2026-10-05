@@ -93,12 +93,6 @@ class Settings(BaseSettings):
             return self.REDIS_URL
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/0"
 
-    # Qdrant Vector Store
-    QDRANT_HOST: str = "localhost"
-    QDRANT_PORT: int = 6333
-    QDRANT_URL: str | None = None
-    QDRANT_API_KEY: str | None = None
-
     # Observability (LangSmith)
     LANGSMITH_TRACING: bool = False
     LANGSMITH_API_KEY: str | None = None

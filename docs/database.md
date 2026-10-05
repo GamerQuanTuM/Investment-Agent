@@ -10,10 +10,6 @@ The architecture strictly segregates relational structured data from semantic ve
   * Financial metrics, ratios, historical prices
   * Immutable prediction tracking & reality monitoring (`prediction_logs`)
   * Strategy versions and rules (`strategy_versions`)
-* **Qdrant Vector Database**:
-  * Regulatory filings, DRHP/RHP draft prospectuses
-  * Earnings call transcripts, Annual reports (MD&A)
-  * Investor presentations, Brokerage research notes
 * **Redis**:
   * Low-latency price caches, rate limit tracking, intermediate session states
 

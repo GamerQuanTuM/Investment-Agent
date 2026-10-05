@@ -31,15 +31,6 @@ services:
       timeout: 5s
       retries: 5
 
-  qdrant:
-    image: qdrant/qdrant:v1.10.1
-    container_name: investment_qdrant
-    restart: always
-    ports:
-      - "${QDRANT_PORT:-6333}:6333"
-    volumes:
-      - qdrant_data:/qdrant/storage
-
   api:
     build:
       context: .
@@ -51,18 +42,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      qdrant:
-        condition: service_started
     env_file:
       - .env
     environment:
       POSTGRES_HOST: postgres
       REDIS_HOST: redis
-      QDRANT_HOST: qdrant
     ports:
       - "${PORT:-8000}:8000"
 
 volumes:
   postgres_data:
   redis_data:
-  qdrant_data:

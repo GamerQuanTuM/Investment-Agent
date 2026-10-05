@@ -10,13 +10,11 @@ graph TD
         A1[Exchange Data Feeds - NSE/BSE]
         A2[Company Filings & Annual Reports]
         A3[AMFI Mutual Fund Ratios]
-        A4[Qdrant Vector Ingestion]
         A5[Deterministic Ratio Calculation]
         A6[Structured Research Output & Theses]
         A1 --> A5
-        A2 --> A4
+        A2 --> A5
         A3 --> A5
-        A4 --> A6
         A5 --> A6
     end
 
@@ -36,7 +34,7 @@ graph TD
 
 ### Layer A: Research Engine
 * Researches stocks, ETFs, mutual funds, IPOs, and corporate announcements independently of any user.
-* Ingests official regulatory documents from NSE, BSE, SEBI, and AMFI into PostgreSQL (structured metrics) and Qdrant (unstructured filings, transcripts, presentations).
+* Ingests official regulatory documents from NSE, BSE, SEBI, and AMFI into PostgreSQL (structured metrics).
 * Produces structured research data, factual claims, and verifiable investment theses.
 * **Never contains user profiles, budgets, or personal financial data.**
 

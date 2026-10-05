@@ -2,7 +2,7 @@
 
 Production-oriented, evidence-based AI Investment Research and Portfolio Guidance Agent tailored specifically for the Indian equity and mutual fund universe (NSE, BSE, SEBI, AMFI).
 
-Built with **Python 3.12+**, `uv`, **FastAPI**, **LangChain**, **LangGraph**, **PostgreSQL**, **Redis**, and **Qdrant**.
+Built with **Python 3.12+**, `uv`, **FastAPI**, **LangChain**, **LangGraph**, **PostgreSQL**, and **Redis**.
 
 ---
 
@@ -40,7 +40,7 @@ The system never hardcodes a single LLM provider. It dynamically routes tasks to
 
 * **Python 3.12+**
 * **`uv` package manager** (installed via `curl -LsSf https://astral.sh/uv/install.sh` or `winget install --id=astral-sh.uv`)
-* **Docker & Docker Compose** (for PostgreSQL, Redis, and Qdrant)
+* **Docker & Docker Compose** (for PostgreSQL and Redis)
 
 ---
 
@@ -64,7 +64,7 @@ The system never hardcodes a single LLM provider. It dynamically routes tasks to
 
 4. **Start Infrastructure Services**:
    ```bash
-   docker compose up -d postgres redis qdrant
+   docker compose up -d postgres redis
    ```
 
 5. **Apply Database Migrations (Alembic)**:
@@ -179,7 +179,7 @@ Detailed architecture and design specifications are maintained in [`docs/`](file
 * [`docs/self-correction.md`](file:///d:/Technical/Python/Agents/AI-Investment-Research-And-Portfolio-Guidance-Agent/docs/self-correction.md): Immutable prediction logs, reality monitoring, and strategy versioning.
 * [`docs/graph-workflow.md`](file:///d:/Technical/Python/Agents/AI-Investment-Research-And-Portfolio-Guidance-Agent/docs/graph-workflow.md): LangGraph state graph specification and short-circuit gating.
 * [`docs/chat.md`](docs/chat.md): Chat intents, slot filling, sessions, stock-list planner and response contract.
-* [`docs/database.md`](file:///d:/Technical/Python/Agents/AI-Investment-Research-And-Portfolio-Guidance-Agent/docs/database.md): PostgreSQL schema, Alembic migrations, and Qdrant vector separation.
+* [`docs/database.md`](file:///d:/Technical/Python/Agents/AI-Investment-Research-And-Portfolio-Guidance-Agent/docs/database.md): PostgreSQL schema, Alembic migrations, and Redis usage.
 
 ---
 
