@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from investment_agent.llm.factory import extract_text, get_llm
+from investment_agent.market import live_universe
 from investment_agent.portfolio.stock_picker import (
     DEFAULT_STOCKS,
     Candidate,
@@ -30,26 +31,49 @@ from investment_agent.research.llm_guard import is_grounded
 
 logger = logging.getLogger(__name__)
 
-DATA_NOT_LOADED = (
-    "Market data isn't loaded yet, so I can't build a stock list without guessing. "
-    "Run the data sync first (POST /market/refresh, then POST /market/fundamentals) and ask again."
+LOADING_TEXT = (
+    "I'm loading fresh market data, this takes about a minute. "
+    "Tap “Try again” in a moment and I'll build your list."
 )
+PROVIDERS_DOWN_TEXT = (
+    "I couldn't reach the market data providers right now, please try again in a few minutes."
+)
+RETRY_CHIP = "Try again"
 BEGINNER_RISK_LINE = (
     "Stocks can fall as well as rise, so only invest money you won't need soon."
 )
 FOLLOWUP_CHIPS = ["Prefer one index fund/ETF SIP instead?", "What about safer ones?"]
 
 
-def _unavailable(text: str, reason: str) -> dict[str, Any]:
+def _unavailable(text: str, reason: str, *, status: str = "DATA_UNAVAILABLE", retry: bool = False) -> dict[str, Any]:
+    chips = ["What is an ETF?", "Plan a ₹5,000 monthly SIP"]
     return {
         "text": text,
         "needs_input": False,
-        "suggestions": ["What is an ETF?", "Plan a ₹5,000 monthly SIP"],
-        "data_status": "DATA_UNAVAILABLE",
+        "suggestions": [RETRY_CHIP, *chips] if retry else chips,
+        "data_status": status,
         "data_reason": reason,
         "stock_plan": None,
         "sources": [],
+        "retry": retry,
     }
+
+
+async def _eligible_candidates() -> tuple[list[Candidate], dict[str, int], str | None]:
+    """Stocks that pass the data checks: from the database when it is populated, otherwise
+    from the live fallback. The last item is None, "loading" or "unreachable"."""
+    filters = pick_filters()
+    universe = await load_pick_universe()
+    kept, excluded = filter_candidates(universe, now=datetime.now(UTC), **filters)
+    if kept:
+        return kept, excluded, None
+    outcome = await live_universe.get_candidates()
+    if outcome.status == "loading":
+        return [], {}, "loading"
+    if outcome.status == "failed":
+        return [], {}, "unreachable"
+    kept, excluded = filter_candidates(outcome.candidates, now=datetime.now(UTC), **filters)
+    return kept, excluded, None if kept else "unreachable"
 
 
 def _inr(value: float) -> str:
@@ -124,11 +148,12 @@ def render_rows(plan: dict[str, Any], *, beginner: bool) -> str:
 
 def _sources(plan: dict[str, Any], chosen: dict[str, Candidate]) -> list[dict[str, Any]]:
     price_date = datetime.fromisoformat(plan["data_as_of"]).replace(tzinfo=UTC) if plan["data_as_of"] else None
+    first = chosen.get(plan["rows"][0]["symbol"]) if plan["rows"] else None
     sources = [
         Evidence(
-            claim=f"Latest stored closing prices for {len(plan['rows'])} stocks",
-            source_name="INDstocks daily bars",
-            source_url="https://api.indstocks.com/market/historical/1day",
+            claim=f"Latest closing prices for {len(plan['rows'])} stocks",
+            source_name=first.price_source_name if first else "INDstocks daily bars",
+            source_url=first.price_source_url if first else "https://api.indstocks.com/market/historical/1day",
             source_type=SourceType.INDSTOCKS,
             data_date=price_date,
         )
@@ -153,17 +178,11 @@ def _sources(plan: dict[str, Any], chosen: dict[str, Candidate]) -> list[dict[st
 
 async def stock_list_reply(slots: dict[str, Any]) -> dict[str, Any]:
     """Build the chat reply for a stock-list request whose amount is already known."""
-    universe = await load_pick_universe()
-    if not universe:
-        return _unavailable(DATA_NOT_LOADED, "empty_universe")
-    kept, excluded = filter_candidates(universe, now=datetime.now(UTC), **pick_filters())
-    if not kept:
-        return _unavailable(
-            "None of the stocks I hold passed my data checks (fresh price, fundamentals, "
-            "enough trading volume), so I won't guess. The market data may need a refresh "
-            "(POST /market/refresh).",
-            "no_eligible_stocks",
-        )
+    kept, excluded, problem = await _eligible_candidates()
+    if problem == "loading":
+        return _unavailable(LOADING_TEXT, "loading", status="LOADING", retry=True)
+    if problem or not kept:
+        return _unavailable(PROVIDERS_DOWN_TEXT, "providers_unreachable", retry=True)
 
     beginner = slots.get("experience_level") == "beginner"
     monthly = slots.get("amount_kind") == "monthly"

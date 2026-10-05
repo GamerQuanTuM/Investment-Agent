@@ -252,8 +252,16 @@ async def portfolio_alerts() -> dict[str, Any]:
 
 @router.get("/status")
 async def market_status() -> dict[str, Any]:
+    from investment_agent.market import auto_sync, live_universe
+
     settings = get_settings()
+    last_sync = auto_sync.state.last_sync_at
     return {
+        "last_sync_at": last_sync.isoformat() if last_sync else None,
+        "rows": await auto_sync.table_counts(),
+        "sync_in_progress": auto_sync.state.in_progress or live_universe.is_loading(),
+        "last_sync_error": auto_sync.state.last_error,
+        "auto_sync_enabled": settings.MARKET_AUTO_SYNC_ENABLED,
         "indstocks_configured": settings.indstocks_configured,
         "watchlist": settings.indstocks_watchlist,
         "amfi_scheme_codes": settings.amfi_scheme_codes,

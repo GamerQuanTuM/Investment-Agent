@@ -24,7 +24,7 @@ from typing import Any
 
 from investment_agent.market.universe import load_symbol_master
 from investment_agent.research import chat_market, education, stock_list_chat
-from investment_agent.research.chat_intent import Extraction, extract, search_universe
+from investment_agent.research.chat_intent import Extraction, Slots, extract, search_universe
 from investment_agent.research.chat_session import (
     add_turn,
     load_session,
@@ -57,6 +57,7 @@ _RISK_PLAIN_LABELS = {
 }
 _RISK_TO_ETF_CAP_STYLE = {"conservative": "large", "moderate": "flexi", "aggressive": "small"}
 
+_RETRY_RE = re.compile(r"^(?:please\s+)?(?:try\s+again|retry)\s*[.!]*$", re.IGNORECASE)
 _RESET_RE = re.compile(r"\b(start\s+over|start\s+again|reset|new\s+chat|clear\s+chat)\b", re.IGNORECASE)
 
 OFF_TOPIC_MESSAGE = (
@@ -193,8 +194,8 @@ async def _symbol_question(
     candidates = ex.symbol_candidates[:5]
     if not master:
         return _body(
-            "Market data isn't loaded yet, so I can't look up that company. "
-            "Run the data sync (POST /market/refresh) and try again."
+            "I can't look up companies right now because the market data is still loading. "
+            "Please try again in a minute."
         )
     if not candidates:
         candidates = search_universe(message, master)
@@ -351,6 +352,8 @@ async def _run_flow(
         "slots": dict(slots),
         "defaults": body.pop("plan_defaults", {}),
     }
+    # A reply that said "loading, try again" remembers what to re-run when the chip is tapped.
+    state["retry"] = {"intent": flow, "slots": dict(slots)} if body.pop("retry", False) else None
     state["intent"] = None
     state["last_asked"] = None
     return body
@@ -423,6 +426,22 @@ async def chat_turn(session_id: str, message: str) -> dict[str, Any]:
 
     state = await load_session(session_id)
     master = await load_symbol_master()
+    pending_retry = state.get("retry")
+    state["retry"] = None
+    if pending_retry and _RETRY_RE.match(message):
+        state["intent"] = pending_retry["intent"]
+        state["slots"] = dict(pending_retry["slots"])
+        retry_ex = Extraction(intent=pending_retry["intent"], slots=Slots())
+        body = await _run_flow(state, retry_ex, master, message)
+        add_turn(state, message, body["text"])
+        await save_session(session_id, state)
+        return {
+            "session_id": session_id,
+            "intent": pending_retry["intent"],
+            "collected": _collected_view(state),
+            "sources": [],
+            **body,
+        }
     ex = await extract(
         message,
         last_asked=state["last_asked"],

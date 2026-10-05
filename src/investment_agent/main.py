@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from investment_agent.api.routes import funds_router, health_router, market_router, research_router
 from investment_agent.config.settings import get_settings
+from investment_agent.market.auto_sync import start_background_sync, stop_background_sync
 from investment_agent.market.cache import close_cache, init_cache
 
 logger = logging.getLogger("investment_agent")
@@ -29,7 +30,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         f"Local: {settings.LOCAL_LLM_PROVIDER}:{settings.LOCAL_LLM_MODEL}"
     )
     await init_cache()
+    start_background_sync()  # never blocks startup; failures are logged inside
     yield
+    await stop_background_sync()
     await close_cache()
     logger.info(f"Shutting down {settings.APP_NAME}")
 

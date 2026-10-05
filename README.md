@@ -142,8 +142,10 @@ Tickers only ever come from the stock master in the database, never from the mod
 "N stocks for ₹X" is selected and sized entirely in Python (whole shares, sector and
 market-cap caps, leftover cash reported, honest small-budget reality check); a model may only
 phrase the result and its text is dropped if it contains any ticker or number not in the
-result. The stock list needs `POST /market/refresh` and `POST /market/fundamentals` to have
-run, otherwise the reply says market data isn't loaded. Sessions live in Redis
+result. Market data syncs automatically in the background at startup and during market hours
+(`GET /market/status` shows the state); until the database is filled, the stock list builds its
+universe live from a reviewed Nifty 50 / Next 50 list and says "loading fresh market data, try
+again" if that takes long. Sessions live in Redis
 (`chat:{session_id}`, 24 h) with an in-memory fallback. Full details: [`docs/chat.md`](docs/chat.md).
 
 ---

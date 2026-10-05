@@ -105,7 +105,7 @@ async def test_missing_amount_asks_only_for_the_amount(universe):
     assert result["suggestions"]
 
 
-async def test_empty_universe_says_data_is_not_loaded(monkeypatch: pytest.MonkeyPatch):
+async def test_empty_universe_and_providers_down_gives_the_friendly_error(monkeypatch: pytest.MonkeyPatch):
     async def empty(**kwargs: Any) -> list[Candidate]:
         return []
 
@@ -113,8 +113,9 @@ async def test_empty_universe_says_data_is_not_loaded(monkeypatch: pytest.Monkey
     result = await chat.chat_turn(_sid(), FAILING_MESSAGE)
     assert result["data_status"] == "DATA_UNAVAILABLE"
     assert result["stock_plan"] is None
-    assert "market data isn't loaded yet" in result["text"].lower()
-    assert "/market/refresh" in result["text"]
+    assert "couldn't reach the market data providers" in result["text"].lower()
+    assert "/market" not in result["text"] and "POST" not in result["text"]
+    assert "DATA_UNAVAILABLE" not in result["text"]
     assert not any(sym in result["text"] for sym in FIXTURE_SYMBOLS)
 
 

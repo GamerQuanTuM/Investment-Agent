@@ -113,6 +113,7 @@ async def sync_fundamentals(
     from investment_agent.market.yahoo_market import (
         company_fundamentals,
         financial_statement_history,
+        quote_symbol,
     )
     from investment_agent.portfolio.calculations import derive_ratios_from_statements
     from investment_agent.research.evidence import SourceType
@@ -140,6 +141,10 @@ async def sync_fundamentals(
             continue
 
         ratios = derive_ratios_from_statements(statements)
+        try:  # the quote carries the company name and market cap the picker's floors need
+            quote = await quote_symbol(symbol, "NSE") or {}
+        except Exception:
+            quote = {}
         try:
             shareholding = await get_shareholding(symbol)
             pledge_pct = latest_promoter_pledge_pct(shareholding)
@@ -149,7 +154,7 @@ async def sync_fundamentals(
         rows.append(
             {
                 "symbol": symbol,
-                "name": symbol,
+                "name": quote.get("name") or symbol,
                 "sector": fundamentals.get("sector") or "Unclassified",
                 "asset_type": "stock",
                 "data_date": now,
@@ -161,7 +166,7 @@ async def sync_fundamentals(
                 "profit_growth_3y_cagr_pct": ratios.get("profit_growth_3y_cagr_pct"),
                 "eps": fundamentals.get("eps"),
                 "book_value_per_share": fundamentals.get("book_value"),
-                "market_cap_cr": None,
+                "market_cap_cr": quote.get("market_cap_cr"),
                 # No dedicated FCF column on FundamentalSnapshot yet; carried in raw_payload
                 # (store_fundamental_snapshots persists the whole row there) rather than
                 # forcing a migration mid-step.

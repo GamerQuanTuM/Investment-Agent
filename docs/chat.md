@@ -88,8 +88,32 @@ from the structured JSON. Every ticker and number in it must appear in the struc
 and forecast language is rejected; otherwise the deterministic template is used. The per-stock
 lines, totals, caveats and the disclaimer are always template text.
 
-If the universe is empty the reply is `DATA_UNAVAILABLE` ("market data isn't loaded yet") and
-names the sync step (`POST /market/refresh`, then `POST /market/fundamentals`).
+### Where the stock universe comes from
+
+1. **Database** (normal case): stored fundamentals + daily bars, filled by the background sync.
+2. **Live fallback**: when the database has no eligible stocks (first run, failed sync),
+   `market/live_universe.py` builds the candidate universe live from a reviewed Nifty 50 / Nifty
+   Next 50 list (`market/index_constituents.py`, with a "last reviewed" date). Each name needs a
+   live Yahoo quote, one-year price history and company ratios (TradingView fills gaps; ROCE and
+   growth are computed in Python). Calls are bounded (8 at a time, per-call timeout, 3 attempts,
+   1-hour Redis cache). Names with no provider data are dropped, never guessed. The result is
+   scored by the same code as stored data and written back to the database, so the next request
+   is instant. Only one fetch runs at a time; every request shares it.
+3. While it runs the reply says "I'm loading fresh market data, this takes about a minute" and
+   offers a **Try again** chip (`data_status: "LOADING"`); tapping it re-runs the same request.
+   Only if both the database and the live fetch fail does it say "I couldn't reach the market data
+   providers right now, please try again in a few minutes" (`data_status: "DATA_UNAVAILABLE"`).
+   Replies never mention API endpoints.
+
+### Background sync (`market/auto_sync.py`)
+
+Started from the app lifespan without blocking startup; it never raises (failures are logged and
+the loop continues). It syncs at once when the database is empty or older than
+`MARKET_DATA_MAX_AGE_HOURS`, then re-checks every 15 minutes: while the NSE is open (Mon-Fri
+09:15-15:30 IST) it syncs every `MARKET_SYNC_INTERVAL_HOURS`; outside market hours it syncs once
+after each close. A sync runs `refresh_market_data()` (watchlist fundamentals, AMFI scheme master,
+INDstocks bars when configured) and the live universe refresh. `GET /market/status` reports
+`last_sync_at`, `rows` per table, `sync_in_progress` and `last_sync_error`.
 
 ## Education
 
@@ -114,7 +138,7 @@ user then gets the list of terms we can explain.
   "stock_plan": { "rows": [], "total_invested": 0, "leftover": 0, "data_as_of": "YYYY-MM-DD",
                   "caveats": [], "reality_check": "…", "sector_split": [], "disclaimer": "…" },
   "plan": {}, "guidance": {}, "ranking": [], "glossary": { "term", "definition", "example" },
-  "data_status": "DATA_UNAVAILABLE"   // only when data is missing
+  "data_status": "LOADING" | "DATA_UNAVAILABLE"   // only when data is loading / missing
 }
 ```
 
@@ -128,3 +152,8 @@ read only those keep working.
 | `MARKET_DATA_MAX_AGE_HOURS` | 36 | A stock whose latest price is older is excluded |
 | `STOCK_PICK_MIN_MARKET_CAP_CR` | 5000 | Market-cap floor (₹ crore) |
 | `STOCK_PICK_MIN_AVG_VOLUME` | 100000 | 20-day average volume floor (shares), applied when volume is stored |
+| `MARKET_AUTO_SYNC_ENABLED` | true | Run the background sync from the app lifespan (off when `APP_ENV=test`) |
+| `MARKET_SYNC_INTERVAL_HOURS` | 6 | Re-sync interval while the market is open |
+| `LIVE_UNIVERSE_CONCURRENCY` | 8 | Parallel provider calls in the live fallback |
+| `LIVE_UNIVERSE_CALL_TIMEOUT_SECONDS` | 15 | Timeout per provider call |
+| `LIVE_UNIVERSE_WAIT_SECONDS` | 20 | How long a chat request waits for the live fetch before saying "loading" |

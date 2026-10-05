@@ -113,6 +113,13 @@ class Settings(BaseSettings):
     # Stock-list picker liquidity floors: names below either are treated as penny/illiquid.
     STOCK_PICK_MIN_MARKET_CAP_CR: float = 5000.0
     STOCK_PICK_MIN_AVG_VOLUME: float = 100000.0
+    # Background market-data sync (started from the app lifespan) and the live fallback the
+    # stock picker uses while the database is still empty.
+    MARKET_AUTO_SYNC_ENABLED: bool = True
+    MARKET_SYNC_INTERVAL_HOURS: float = 6.0
+    LIVE_UNIVERSE_CONCURRENCY: int = 8
+    LIVE_UNIVERSE_CALL_TIMEOUT_SECONDS: float = 15.0
+    LIVE_UNIVERSE_WAIT_SECONDS: float = 20.0
 
     # Mutual fund NAVs (official AMFI file, no API key)
     AMFI_NAV_URL: str = "https://portal.amfiindia.com/spages/NAVAll.txt"

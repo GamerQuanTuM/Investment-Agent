@@ -94,6 +94,8 @@ class Candidate:
     signals: dict[str, float | None] = field(default_factory=dict)
     source_name: str = ""
     source_url: str = ""
+    price_source_name: str = "INDstocks daily bars"
+    price_source_url: str = "https://api.indstocks.com/market/historical/1day"
 
     @property
     def band(self) -> str:
@@ -559,16 +561,8 @@ async def load_pick_universe(*, use_cache: bool = True) -> list[Candidate]:
     for snap in snaps:
         latest.setdefault(snap.symbol.upper(), snap)
 
-    peers: dict[str, list[float]] = defaultdict(list)
-    for symbol, snap in latest.items():
-        bars = series.get(symbol)
-        if bars and snap.eps and snap.eps > 0:
-            peers[snap.sector].append(bars[-1][1] / snap.eps)
-
-    candidates: list[Candidate] = []
-    for symbol, snap in latest.items():
-        bars = series.get(symbol, [])
-        snapshot = {
+    snapshots = {
+        symbol: {
             "symbol": symbol,
             "name": snap.name,
             "sector": snap.sector,
@@ -585,15 +579,48 @@ async def load_pick_universe(*, use_cache: bool = True) -> list[Candidate]:
             "source_name": snap.source_name,
             "source_url": snap.source_url,
         }
-        candidates.append(
-            score_candidate(
-                snapshot,
-                [b[1] for b in bars],
-                [b[2] for b in bars],
-                bars[-1][0] if bars else None,
-                peers[snap.sector],
-            )
+        for symbol, snap in latest.items()
+    }
+    candidates = build_candidates(snapshots, series, now)
+    _universe_cache = (now, candidates)
+    return candidates
+
+
+def invalidate_universe_cache() -> None:
+    """Forget the cached DB universe (called after new rows are stored)."""
+    global _universe_cache
+    _universe_cache = None
+
+
+def build_candidates(
+    snapshots: dict[str, dict[str, Any]],
+    series: dict[str, list[tuple[datetime, float, float]]],
+    now: datetime,
+    *,
+    price_source: tuple[str, str] | None = None,
+) -> list[Candidate]:
+    """Score every snapshot against its price series (Python only). Shared by the database
+    loader and the live fallback so both rank with exactly the same rules."""
+    peers: dict[str, list[float]] = defaultdict(list)
+    for symbol, snapshot in snapshots.items():
+        bars = series.get(symbol)
+        eps = snapshot.get("eps")
+        if bars and eps and eps > 0:
+            peers[snapshot.get("sector") or "Unclassified"].append(bars[-1][1] / eps)
+
+    candidates: list[Candidate] = []
+    for symbol, snapshot in snapshots.items():
+        bars = series.get(symbol, [])
+        cand = score_candidate(
+            snapshot,
+            [b[1] for b in bars],
+            [b[2] for b in bars],
+            bars[-1][0] if bars else None,
+            peers[snapshot.get("sector") or "Unclassified"],
         )
+        if price_source:
+            cand.price_source_name, cand.price_source_url = price_source
+        candidates.append(cand)
 
     by_sector: dict[str, list[float]] = defaultdict(list)
     for cand in candidates:
@@ -605,7 +632,6 @@ async def load_pick_universe(*, use_cache: bool = True) -> list[Candidate]:
         cand.signals["sector_median_return_12m_pct"] = (
             round(statistics.median(moves), 2) if len(moves) >= 3 else None
         )
-    _universe_cache = (now, candidates)
     return candidates
 
 

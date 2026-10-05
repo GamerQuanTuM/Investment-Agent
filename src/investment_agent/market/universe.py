@@ -204,3 +204,9 @@ async def load_portfolio_from_broker() -> dict[str, Any] | None:
         "portfolio_source": "indstocks",
         "retrieved_at": now,
     }
+
+
+def invalidate_master_cache() -> None:
+    """Forget the cached symbol master (called after new fundamentals are stored)."""
+    global _master_cache
+    _master_cache = None

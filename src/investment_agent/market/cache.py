@@ -35,6 +35,7 @@ class CacheTTL(IntEnum):
     NEWS = 30 * 60
     MACRO = 6 * 60 * 60
     CHAT_SESSION = 24 * 60 * 60
+    LIVE_UNIVERSE = 60 * 60
 
 
 def _get_client() -> Redis:

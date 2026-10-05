@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from investment_agent.market import live_universe
 from investment_agent.research import chat, chat_intent, chat_session, education, stock_list_chat
 
 SYMBOL_MASTER: list[dict[str, str]] = [
@@ -80,6 +81,19 @@ def _chat_isolation(fake_redis: FakeRedis, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(chat_intent, "get_llm", no_llm)  # deterministic rules by default
     monkeypatch.setattr(education, "get_llm", no_llm)
     monkeypatch.setattr(stock_list_chat, "get_llm", no_llm)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_market_fetch(monkeypatch: pytest.MonkeyPatch):
+    """The live universe fallback must never reach real providers from a unit test."""
+    live_universe.reset_state()
+
+    async def providers_down(wait_seconds: float | None = None) -> live_universe.LiveOutcome:
+        return live_universe.LiveOutcome("failed", [])
+
+    monkeypatch.setattr(live_universe, "get_candidates", providers_down)
+    yield
+    live_universe.reset_state()
 
 
 @pytest.fixture
