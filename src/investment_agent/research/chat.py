@@ -23,6 +23,7 @@ import re
 from typing import Any
 
 from investment_agent.market.universe import load_symbol_master
+from investment_agent.research import education
 from investment_agent.research.chat_intent import Extraction, extract, search_universe
 from investment_agent.research.chat_session import (
     add_turn,
@@ -387,7 +388,16 @@ async def _dispatch(
     if intent == "fund_list":
         _apply_slots(state, ex)
         return intent, await _ranked_funds_reply(state)
-    if intent in ("education", "market_overview", "portfolio_help"):
+    if intent == "education":
+        amount = state["slots"].get("amount_inr") or ex.slots.amount_inr
+        answer = await education.explain(message, ex.slots.concept, amount)
+        return intent, _body(
+            answer["text"],
+            suggestions=answer["suggestions"],
+            sources=answer["sources"],
+            **({"glossary": answer["glossary"]} if "glossary" in answer else {}),
+        )
+    if intent in ("market_overview", "portfolio_help"):
         return intent, await _not_available_yet(intent)
     return "unclear", _unclear_reply(ex)
 
