@@ -125,6 +125,27 @@ until that's run at least once, both routes degrade gracefully (search falls bac
 mfapi.in's own unclassified search; suggest returns a `DATA_UNAVAILABLE` sleeve per
 category) rather than erroring. See `docs/data-sources.md` §4 for the data-source detail.
 
+### Chat Assistant
+
+`POST /research/chat` understands a beginner's own words. A structured intent step (cheap
+model → validated JSON, deterministic rules as fallback) picks one of `education`,
+`stock_list`, `stock_single`, `plan_sip_fund`, `plan_sip_etf`, `fund_list`, `market_overview`,
+`portfolio_help`, `off_topic` or `unclear`, and fills slots (amount, lump sum vs monthly,
+horizon, risk, stock count, experience) from everything said in one message.
+
+```bash
+curl -s -X POST http://localhost:8000/research/chat -H "Content-Type: application/json"   -d '{"session_id": "demo", "message": "I am new. Suggest 10-12 stocks for 10000 rupees"}'
+curl -s -X POST http://localhost:8000/research/chat -H "Content-Type: application/json"   -d '{"session_id": "demo", "message": "what is an ETF?"}'
+```
+
+Tickers only ever come from the stock master in the database, never from the model.
+"N stocks for ₹X" is selected and sized entirely in Python (whole shares, sector and
+market-cap caps, leftover cash reported, honest small-budget reality check); a model may only
+phrase the result and its text is dropped if it contains any ticker or number not in the
+result. The stock list needs `POST /market/refresh` and `POST /market/fundamentals` to have
+run, otherwise the reply says market data isn't loaded. Sessions live in Redis
+(`chat:{session_id}`, 24 h) with an in-memory fallback. Full details: [`docs/chat.md`](docs/chat.md).
+
 ---
 
 ## 6. Running Tests & Code Quality
@@ -157,6 +178,7 @@ Detailed architecture and design specifications are maintained in [`docs/`](file
 * [`docs/data-sources.md`](file:///d:/Technical/Python/Agents/AI-Investment-Research-And-Portfolio-Guidance-Agent/docs/data-sources.md): Indian market primary sources (NSE, BSE, SEBI, AMFI) and evidence schemas.
 * [`docs/self-correction.md`](file:///d:/Technical/Python/Agents/AI-Investment-Research-And-Portfolio-Guidance-Agent/docs/self-correction.md): Immutable prediction logs, reality monitoring, and strategy versioning.
 * [`docs/graph-workflow.md`](file:///d:/Technical/Python/Agents/AI-Investment-Research-And-Portfolio-Guidance-Agent/docs/graph-workflow.md): LangGraph state graph specification and short-circuit gating.
+* [`docs/chat.md`](docs/chat.md): Chat intents, slot filling, sessions, stock-list planner and response contract.
 * [`docs/database.md`](file:///d:/Technical/Python/Agents/AI-Investment-Research-And-Portfolio-Guidance-Agent/docs/database.md): PostgreSQL schema, Alembic migrations, and Qdrant vector separation.
 
 ---
