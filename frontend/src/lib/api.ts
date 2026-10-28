@@ -1,5 +1,7 @@
 import {
   ChatReply,
+  EvidenceItem,
+  ResearchStep,
   HealthStatus,
   BrokerVaultState,
   StockQuote,
@@ -183,6 +185,74 @@ export async function sendChat(sessionId: string, message: string) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Reads a server-sent-event response: `step` events go to `onStep`, the final `reply` is returned. */
+async function readEventStream<T>(res: Response, onStep: (step: ResearchStep) => void): Promise<{ data: T; seconds: number }> {
+  if (!res.ok || !res.body) throw new Error((await res.text()) || "The agent could not answer.");
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() ?? "";
+    for (const frame of frames) {
+      if (!frame.startsWith("data: ")) continue; // keep-alive comments
+      const event = JSON.parse(frame.slice(6));
+      if (event.type === "step") onStep(event as ResearchStep);
+      else if (event.type === "reply") return { data: event.data as T, seconds: event.seconds as number };
+      else if (event.type === "error") throw new Error(event.message);
+    }
+  }
+  throw new Error("The connection closed before the answer arrived. Please try again.");
+}
+
+async function streamPost<T>(path: string, body: unknown, onStep: (step: ResearchStep) => void) {
+  // Same 90 s ceiling as sendChat: never leave the page spinning forever.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${API_BASE_URL}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    return await readEventStream<T>(res, onStep);
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error("That took too long. Please try again in a moment.");
+    }
+    if (err instanceof TypeError) {
+      throw new Error("I couldn't reach the server. Check that the backend is running, then try again.");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** One chat turn with live progress. `research` = the Research toggle (web sources only). */
+export function streamChat(sessionId: string, message: string, research: boolean, onStep: (step: ResearchStep) => void) {
+  return streamPost<ChatReply>("/research/chat/stream", { session_id: sessionId, message, research }, onStep);
+}
+
+export interface StockResearchResult {
+  guidance: GuidanceNote;
+  research_text: string;
+  sources: EvidenceItem[];
+  tools_used: string[];
+}
+
+/** Research page: live-data guidance plus cited web research for one stock, with progress. */
+export function streamStockResearch(
+  body: { symbol: string; exchange: string; horizon_years: number; horizon_months: number; monthly_budget: number },
+  onStep: (step: ResearchStep) => void,
+) {
+  return streamPost<StockResearchResult>("/research/stock/stream", body, onStep);
 }
 
 export function fetchFundCatalogue(offset: number, query = "", category = "") {

@@ -20,6 +20,7 @@ import logging
 import re
 
 from investment_agent.llm.factory import extract_text, get_llm
+from investment_agent.research.chat_memory import conversation_context
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +103,12 @@ async def write(task: str, question: str, reference: str = "") -> str | None:
             "\nREVIEWED REFERENCE (stay consistent with it; reword it for this person's question "
             f"and explain more simply, but add no figures):\n{reference}\n"
         )
+    context = conversation_context.get()
+    if context:
+        prompt += (
+            "\nCONVERSATION SO FAR (use it to understand follow-ups such as 'it', 'that one' or "
+            f"'the second'; do not repeat it):\n{context}\n"
+        )
     prompt += f"\nUSER QUESTION: {question}"
     try:
         model = get_llm("cheap")
@@ -133,6 +140,13 @@ TASKS = {
         "The person asks whether an investment is guaranteed or risk-free. Answer honestly: nothing in "
         "the market is guaranteed, values rise and fall and can end below what was put in, past results "
         "do not promise the future. Mention what the thing does help with, in bullets."
+    ),
+    "clarify": (
+        "The person's message is not clear enough to act on. Do not answer it yet. Ask ONE short, "
+        "friendly clarifying question that would let you help, using what they said earlier if "
+        "relevant (for example whether they want stocks for an amount, a mutual fund or ETF SIP, "
+        "a term explained, or a market check). Offer at most three options as short bullets. "
+        "Ask about their goal, not their personal details."
     ),
     "emergency": (
         "The person may be about to risk money they might need soon (emergency savings, job loss, "

@@ -461,7 +461,16 @@ export interface ChatCollected {
   experience_level: "beginner" | "intermediate" | null;
 }
 
+/** One line of the live "researching" checklist streamed from the backend. */
+export interface ResearchStep {
+  id: string;
+  label: string;
+  detail?: string | null;
+  status: "running" | "done";
+}
+
 export interface ChatReply {
+  research?: { tools_used: string[]; mode: "forced" | "auto" };
   session_id: string;
   text: string;
   needs_input: boolean;

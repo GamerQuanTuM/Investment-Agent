@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from investment_agent.llm.factory import extract_text, get_llm
 from investment_agent.research.chat_guardrails import detect as detect_guardrail
+from investment_agent.research.chat_memory import conversation_context
 from investment_agent.research.glossary import (
     GLOSSARY_ALIAS_WORDS,
     asks_for_definition,
@@ -98,6 +99,8 @@ class Slots(BaseModel):
 class _LLMReply(BaseModel):
     intent: Intent
     slots: Slots = Field(default_factory=Slots)
+    clarify: str | None = None  # one question, when the message is genuinely ambiguous
+    options: list[str] = Field(default_factory=list)
 
 
 class SymbolMatch(BaseModel):
@@ -110,6 +113,8 @@ class Extraction(BaseModel):
     slots: Slots
     symbol_candidates: list[dict[str, str]] = Field(default_factory=list)
     source: Literal["llm", "rules"] = "rules"
+    clarify: str | None = None
+    clarify_options: list[str] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- symbols
@@ -246,12 +251,15 @@ _NUMBER_WORDS = {
     "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
 }
 _NUM_OR_WORD = r"(\d{1,2}|" + "|".join(_NUMBER_WORDS) + r")"
+# Up to two describing words may sit between the number and the noun: "30 penny stocks",
+# "10 good large cap stocks". Never a time unit, so "5 years stocks" is not a count of 5.
+_COUNT_ADJ = r"(?:(?!years?\b|yrs?\b|months?\b)[a-z-]+\s+){0,2}"
 _COUNT_RANGE = re.compile(
-    rf"{_NUM_OR_WORD}\s*(?:-|–|to)\s*{_NUM_OR_WORD}\s*(?:stocks?|shares?|companies|names|picks)",
+    rf"{_NUM_OR_WORD}\s*(?:-|–|to)\s*{_NUM_OR_WORD}\s*{_COUNT_ADJ}(?:stocks?|shares?|companies|names|picks)",
     re.IGNORECASE,
 )
 _COUNT_SINGLE = re.compile(
-    rf"{_NUM_OR_WORD}\s*(?:stocks?|shares?|companies|names|picks)", re.IGNORECASE
+    rf"{_NUM_OR_WORD}\s*{_COUNT_ADJ}(?:stocks?|shares?|companies|names|picks)", re.IGNORECASE
 )
 _COUNT_MAKE_IT = re.compile(rf"\b(?:make|change)\s+(?:it|that|this)\s+(?:to\s+)?{_NUM_OR_WORD}\b", re.IGNORECASE)
 _YEARS = re.compile(r"(\d{1,2})\s*[- ]?\s*(?:years?|yrs?)\b", re.IGNORECASE)
@@ -576,7 +584,7 @@ def rule_intent(
 
 _LLM_PROMPT = """You label messages sent to an Indian investing assistant. Reply with ONE JSON object and nothing else.
 
-{{"intent": <one of {intents}>, "slots": {{"amount_inr": number|null, "amount_kind": "lump_sum"|"monthly"|null, "horizon_years": integer|null, "risk_profile": "conservative"|"moderate"|"aggressive"|null, "stock_count": integer|null, "stock_count_min": integer|null, "symbol": string|null, "concept": string|null, "term_a": string|null, "term_b": string|null, "experience_level": "beginner"|"intermediate"|null, "sectors_wanted": [string]}}}}
+{{"clarify": string|null, "options": [string], "intent": <one of {intents}>, "slots": {{"amount_inr": number|null, "amount_kind": "lump_sum"|"monthly"|null, "horizon_years": integer|null, "risk_profile": "conservative"|"moderate"|"aggressive"|null, "stock_count": integer|null, "stock_count_min": integer|null, "symbol": string|null, "concept": string|null, "term_a": string|null, "term_b": string|null, "experience_level": "beginner"|"intermediate"|null, "sectors_wanted": [string]}}}}
 
 Intent meanings:
 education - asks what ONE finance term or concept means (ETF, SIP, P/E, NAV, ELSS, demat) or how the market works
@@ -591,7 +599,11 @@ portfolio_help - asks about their own holdings
 answer - a reply to the assistant's pending question (pending: {pending}) or a tweak of the previous plan (plan shown: {plan})
 off_topic - not about investing; unclear - investing related but you cannot tell what they want
 
-Use null for any slot the message does not state. Never guess a number. Message: {message}"""
+Use null for any slot the message does not state. Never guess a number.
+
+Also decide whether you must ask the person something before anyone can act. Set "clarify" to ONE short, friendly question (and "options" to 2-3 short answer choices) ONLY when the message is ambiguous in a way that would change the answer: two plausible meanings (for example "20 more stocks" = 20 extra or 20 in total), or the goal cannot be guessed. Use the conversation so far to resolve references like "it" or "those". Never ask for something that has a sensible default (holding period, risk comfort, number of stocks) and never ask when the request is clear. Otherwise "clarify" is null and "options" is [].
+{context}
+Message: {message}"""
 
 
 def _parse_llm_json(raw: str) -> _LLMReply | None:
@@ -614,6 +626,11 @@ async def _llm_extract(message: str, last_asked: str | None, has_prior_plan: boo
                     pending=last_asked or "none",
                     plan=has_prior_plan,
                     message=json.dumps(message),
+                    context=(
+                        f"Conversation so far:\n{conversation_context.get()}\n"
+                        if conversation_context.get()
+                        else ""
+                    ),
                 )
             ),
             timeout=LLM_TIMEOUT_SECONDS,
@@ -671,12 +688,15 @@ async def extract(
 
     intent: Intent = rule
     source: Literal["llm", "rules"] = "rules"
+    clarify: str | None = None
+    clarify_options: list[str] = []
     # A short reply to our own pending question is unambiguous: skip the model entirely.
     # Fixed-answer intents are decided by the rules alone: no model call, no added latency.
     if rule not in ("answer", "guardrail", "compare"):
         llm = await _llm_extract(message, last_asked, has_prior_plan)
         if llm is not None:
             source = "llm"
+            clarify, clarify_options = llm.clarify, llm.options
             slots = _merge_slots(slots, llm.slots, message)
             intent = llm.intent
             if intent == "answer" and not last_asked and not has_prior_plan:
@@ -696,5 +716,10 @@ async def extract(
     if symbols.symbol:
         slots.symbol = symbols.symbol
     return Extraction(
-        intent=intent, slots=slots, symbol_candidates=symbols.candidates, source=source
+        intent=intent,
+        slots=slots,
+        symbol_candidates=symbols.candidates,
+        source=source,
+        clarify=clarify,
+        clarify_options=clarify_options,
     )

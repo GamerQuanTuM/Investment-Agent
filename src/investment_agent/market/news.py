@@ -21,6 +21,7 @@ from xml.etree import ElementTree
 import httpx
 
 from investment_agent.market.cache import CacheTTL, cache_get, cache_set
+from investment_agent.market.tavily import tavily_search
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,20 @@ async def get_news(query: str, limit: int = 15) -> list[dict[str, Any]]:
     cached = await cache_get(cache_key)
     if cached is not None:
         return json.loads(cached)
+
+    ranked = await tavily_search(f"{query} India stock market", max_results=limit)
+    if ranked:
+        articles = [
+            {
+                "title": str(r["title"]).strip(),
+                "link": r.get("url"),
+                "source_name": httpx.URL(r["url"]).host if r.get("url") else "Tavily",
+                "published_at": _parse_pub_date(r.get("published_date")),
+            }
+            for r in ranked
+        ]
+        await cache_set(cache_key, json.dumps(articles), CacheTTL.NEWS)
+        return articles
 
     params = {"q": query, "hl": "en-IN", "gl": "IN", "ceid": "IN:en"}
     try:

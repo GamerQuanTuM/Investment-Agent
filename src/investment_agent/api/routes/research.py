@@ -1,7 +1,12 @@
 import asyncio
+import json
+import logging
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -10,9 +15,12 @@ from investment_agent.api.dependencies import get_investment_graph
 from investment_agent.db.models.market import FundamentalSnapshot
 from investment_agent.db.session import async_session_factory
 from investment_agent.graph.state import InvestmentGraphState
+from investment_agent.research import consultant, progress
 from investment_agent.research.chat import chat_turn
 from investment_agent.research.guidance import guide_symbol
 from investment_agent.research.sip import build_etf_sip
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/research", tags=["Research"])
 
@@ -46,6 +54,7 @@ async def research_guidance(request: GuidanceRequest) -> dict[str, Any]:
 class ChatRequest(BaseModel):
     session_id: str
     message: str = Field(min_length=1)
+    research: bool = False  # the Research toggle: answer from live web sources only
 
 
 class SipRequest(BaseModel):
@@ -61,7 +70,83 @@ async def research_chat(request: ChatRequest) -> dict[str, Any]:
     fills slots from everything the user already said and asks only for what is missing.
     Response: session_id, text, needs_input, intent, collected, suggestions, sources, plus
     stock_plan / plan / guidance / ranking / glossary depending on the intent."""
-    return await chat_turn(request.session_id, request.message)
+    return await chat_turn(request.session_id, request.message, request.research)
+
+
+async def _event_stream(work: Callable[[], Awaitable[dict[str, Any]]]) -> AsyncIterator[str]:
+    """Run `work`, relaying its progress steps live, then the final result, as server-sent events."""
+    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    progress.set_sink(queue.put_nowait)
+    task = asyncio.ensure_future(work())  # copies the context, sink included
+    started = time.monotonic()
+
+    def frame(event: dict[str, Any]) -> str:
+        return f"data: {json.dumps(event, default=str)}\n\n"
+
+    try:
+        while True:
+            getter = asyncio.ensure_future(queue.get())
+            done, _ = await asyncio.wait({getter, task}, timeout=10, return_when=asyncio.FIRST_COMPLETED)
+            if getter in done:
+                yield frame(getter.result())
+                continue
+            getter.cancel()
+            if task in done:
+                break
+            yield ": keep-alive\n\n"
+        while not queue.empty():
+            yield frame(queue.get_nowait())
+        try:
+            yield frame({"type": "reply", "data": task.result(), "seconds": round(time.monotonic() - started, 1)})
+        except Exception as exc:
+            logger.exception("Streamed request failed")
+            yield frame({"type": "error", "message": str(exc) or "The agent could not answer."})
+    finally:
+        if not task.done():
+            task.cancel()
+
+
+_SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+
+@router.post("/chat/stream")
+async def research_chat_stream(request: ChatRequest) -> StreamingResponse:
+    """Same as /chat, but streams `step` events (what the agent is doing) before the `reply`."""
+    return StreamingResponse(
+        _event_stream(lambda: chat_turn(request.session_id, request.message, request.research)),
+        media_type="text/event-stream",
+        headers=_SSE_HEADERS,
+    )
+
+
+@router.post("/stock/stream")
+async def research_stock_stream(request: GuidanceRequest) -> StreamingResponse:
+    """Research page: live-data guidance plus cited web research for one stock, with progress."""
+    if request.horizon_years == 0 and request.horizon_months == 0:
+        raise HTTPException(status_code=400, detail="Enter a holding span in years, months, or both.")
+    venue = "BSE" if request.exchange.upper() == "BSE" else "NSE"
+    symbol = request.symbol.strip().upper()
+
+    async def work() -> dict[str, Any]:
+        progress.emit("data", f"Fetching live price and fundamentals for {symbol}")
+        guide = await guide_symbol(
+            symbol, request.horizon_years, request.monthly_budget, venue, request.horizon_months
+        )
+        progress.emit("data", f"Fetched live data for {symbol}", done=True)
+        row = {
+            "symbol": guide["symbol"],
+            "name": guide.get("name") or guide["symbol"],
+            "sector": guide.get("sector") or "its sector",
+        }
+        research = await consultant.research_stocks([row])
+        return {
+            "guidance": guide,
+            "research_text": consultant.render([row], research),
+            "sources": research.get("sources", []),
+            "tools_used": research.get("tools_used", []),
+        }
+
+    return StreamingResponse(_event_stream(work), media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @router.post("/sip")

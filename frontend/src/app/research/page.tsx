@@ -11,8 +11,10 @@ import {
   Gauge,
   Sparkles,
 } from "lucide-react";
-import { fetchGuidance } from "@/lib/api";
-import { GuidanceNote } from "@/lib/types";
+import { streamStockResearch } from "@/lib/api";
+import { GuidanceNote, ResearchStep } from "@/lib/types";
+import { RichText } from "@/components/RichText";
+import { ResearchProgress, ResearchSummary, mergeStep } from "@/components/ResearchSteps";
 
 const tone: Record<GuidanceNote["stance"], string> = {
   CONSIDER: "text-(--bull-green) bg-(--bull-green-soft)",
@@ -39,6 +41,9 @@ export default function ResearchPage() {
   const [months, setMonths] = useState(0);
   const [budget, setBudget] = useState(25000);
   const [note, setNote] = useState<GuidanceNote | null>(null);
+  const [researchText, setResearchText] = useState("");
+  const [steps, setSteps] = useState<ResearchStep[]>([]);
+  const [seconds, setSeconds] = useState<number | undefined>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -60,8 +65,21 @@ export default function ResearchPage() {
     setLoading(true);
     setError(null);
     setNote(null);
+    setResearchText("");
+    setSteps([]);
+    setSeconds(undefined);
+    let collected: ResearchStep[] = [];
     try {
-      setNote(await fetchGuidance(ticker, years, budget, exchange, months));
+      const { data, seconds: took } = await streamStockResearch(
+        { symbol: ticker, exchange, horizon_years: years, horizon_months: months, monthly_budget: budget },
+        (step) => {
+          collected = mergeStep(collected, step);
+          setSteps(collected);
+        },
+      );
+      setNote(data.guidance);
+      setResearchText(data.research_text);
+      setSeconds(took);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Research failed.");
     } finally {
@@ -152,7 +170,7 @@ export default function ResearchPage() {
           disabled={loading}
           className="rounded-xl bg-(--section-research) px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-60 sm:col-span-2"
         >
-          {loading ? "Researching live quote…" : "Research this stock"}
+          {loading ? "Researching…" : "Research this stock"}
         </button>
       </form>
 
@@ -162,6 +180,7 @@ export default function ResearchPage() {
             <AlertTriangle className="h-4 w-4 shrink-0" /> {error}
           </div>
         )}
+        {loading && <ResearchProgress steps={steps} />}
         {note && (
           <article className="card overflow-hidden p-0">
             {/* Beginner verdict — plain English, no jargon */}
@@ -293,6 +312,12 @@ export default function ResearchPage() {
             </ul>
             </div>
           </article>
+        )}
+        {note && researchText && (
+          <section className="card p-5">
+            <ResearchSummary steps={steps} seconds={seconds} />
+            <RichText text={researchText} />
+          </section>
         )}
       </div>
     </main>

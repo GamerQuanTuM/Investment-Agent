@@ -20,11 +20,21 @@ from __future__ import annotations
 
 import logging
 import re
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
 
 from investment_agent.market.universe import load_symbol_master
-from investment_agent.research import chat_guardrails, chat_market, education, stock_list_chat
+from investment_agent.research import (
+    chat_ai,
+    chat_guardrails,
+    chat_market,
+    chat_memory,
+    consultant,
+    education,
+    progress,
+    stock_list_chat,
+)
 from investment_agent.research.chat_intent import (
     _OFF_TOPIC_RE,
     Extraction,
@@ -32,6 +42,7 @@ from investment_agent.research.chat_intent import (
     extract,
     search_universe,
 )
+from investment_agent.research.chat_memory import conversation_context
 from investment_agent.research.chat_session import (
     add_turn,
     load_session,
@@ -92,8 +103,8 @@ STOP_TEXT = (
 _RESET_RE = re.compile(r"\b(start\s+over|start\s+again|reset|new\s+chat|clear\s+chat)\b", re.IGNORECASE)
 
 OFF_TOPIC_MESSAGE = (
-    "I can only help with the Indian stock market, mutual funds, SIPs and ETFs. "
-    "That question doesn't look related — try one of the questions below."
+    "I only answer questions about stocks and the Indian market (including mutual funds, SIPs and "
+    "ETFs). That question doesn't look related, so I'll leave it. Try one of the questions below."
 )
 
 STARTER_SUGGESTIONS = [
@@ -273,6 +284,7 @@ async def _symbol_question(
 
 async def _stock_single_reply(state: dict[str, Any]) -> dict[str, Any]:
     slots = state["slots"]
+    progress.emit("data", f"Fetching live price and fundamentals for {slots['symbol']}")
     try:
         guide = await guide_symbol(slots["symbol"], int(slots["horizon_years"]), float(slots["amount_inr"]))
     except Exception as exc:
@@ -281,7 +293,13 @@ async def _stock_single_reply(state: dict[str, Any]) -> dict[str, Any]:
             f"DATA_UNAVAILABLE: I couldn't fetch live data for {slots['symbol']} right now, so I won't guess."
         )
     text = f"{guide['symbol']}: {guide['stance']}. {guide['summary']}"
-    return _body(text, guidance=guide)
+    row = {"symbol": guide["symbol"], "name": guide.get("name") or guide["symbol"], "sector": guide.get("sector") or "its sector"}
+    progress.emit("data", f"Fetched live data for {slots['symbol']}", done=True)
+    research = await consultant.research_stocks([row])
+    notes = consultant.render([row], research)
+    if notes:
+        text = f"{text}\n\n{notes}"
+    return _body(text, guidance=guide, sources=research.get("sources", []))
 
 
 async def _ranked_funds_reply(state: dict[str, Any]) -> dict[str, Any]:
@@ -600,11 +618,15 @@ async def _run_flow(
     elif flow == "plan_sip_etf":
         body = await _etf_plan_reply(state)
     elif flow == "stock_list":
-        body = await stock_list_chat.stock_list_reply(slots)
+        previous = (state.get("last_result") or {}).get("shown") if state.get("last_result") else None
+        body = await stock_list_chat.stock_list_reply(slots, previous=previous)
     else:
         body = await _fund_plan_reply(state)
+    shown = [r["symbol"] for r in (body.get("stock_plan") or {}).get("rows", [])]
+    slots.pop("exclude_symbols", None)  # applies to this one list only, not to later tweaks
     state["last_result"] = {
         "intent": flow,
+        "shown": shown,
         "slots": dict(slots),
         "defaults": body.pop("plan_defaults", {}),
     }
@@ -615,10 +637,209 @@ async def _run_flow(
     return body
 
 
+# True while the user has the Research toggle on: concept, comparison, market and unclear
+# questions are then answered from live web sources only, and anything off-topic is declined.
+research_mode: ContextVar[bool] = ContextVar("research_mode", default=False)
+_RESEARCHABLE = frozenset({"education", "compare", "market_overview", "unclear"})
+NO_SEARCH_TEXT = (
+    "Research mode needs web search, which isn't set up on this server yet "
+    "(add TAVILY_API_KEY). You can switch Research off to get a general answer."
+)
+NO_SOURCES_TEXT = (
+    "I couldn't find reliable recent sources for that, so I won't guess. "
+    "Try rewording it, naming the company or topic, or switch Research off for a general explanation."
+)
+
+
+async def _research_reply(intent: str, message: str) -> tuple[str, dict[str, Any]] | None:
+    """A cited web-research answer, or None to carry on with the normal answer path."""
+    forced = research_mode.get()
+    if intent not in _RESEARCHABLE or not (
+        forced or (intent == "education" and consultant.needs_fresh_facts(message))
+    ):
+        return None
+    result = await consultant.research_answer(message, conversation_context.get())
+    if result["status"] == "OK":
+        return intent, _body(
+            result["text"],
+            suggestions=["What are the risks?", "Suggest 10 stocks for ₹10,000", "What is an ETF?"],
+            sources=result["sources"],
+            answered_by="ai" if result["written_by"] == "ai" else "reviewed",
+            research={"tools_used": result["tools_used"], "mode": "forced" if forced else "auto"},
+        )
+    if result["status"] == "OUT_OF_SCOPE":
+        return "off_topic", _off_topic_reply()
+    if not forced:
+        return None  # automatic search failed: the normal answer is still fine
+    text = NO_SEARCH_TEXT if result.get("reason") == "no_key" else NO_SOURCES_TEXT
+    return intent, _body(text, suggestions=list(STARTER_SUGGESTIONS))
+
+
+_MORE_RE = re.compile(r"\b(more|another|additional|extra|other|different)\b", re.IGNORECASE)
+_MORE_CHIP = "{n} more, different from these"
+_TOTAL_CHIP = "A fresh list of {n} in total"
+
+
+def _needs_more_clarification(state: dict[str, Any], ex: Extraction, message: str, intent: str) -> bool:
+    """"More 20 stocks" after a finished list could mean 20 extra or 20 in total: ask which."""
+    last = state.get("last_result")
+    return bool(
+        last
+        and last["intent"] == "stock_list"
+        and last.get("shown")
+        and ex.slots.stock_count
+        and intent in ("stock_list", "answer")
+        and _MORE_RE.search(message)
+    )
+
+
+def _more_question(state: dict[str, Any], ex: Extraction, message: str) -> dict[str, Any]:
+    n = int(ex.slots.stock_count or 0)
+    shown = state["last_result"]["shown"]
+    state["clarify"] = {"kind": "more_stocks", "count": n}
+    return _body(
+        f"Quick check so I get this right: do you want **{n} more stocks** on top of the "
+        f"{len(shown)} I already showed (all different from those), or **a fresh list of {n} in total**?",
+        needs_input=True,
+        suggestions=[_MORE_CHIP.format(n=n), _TOTAL_CHIP.format(n=n)],
+    )
+
+
+async def _answer_more_question(
+    session_id: str, state: dict[str, Any], message: str, pending: dict[str, Any], master: list[dict[str, str]]
+) -> dict[str, Any] | None:
+    """Run the list the person chose; None if their reply was something else entirely."""
+    n = pending["count"]
+    wants_more = message.strip().lower().startswith(_MORE_CHIP.format(n=n).lower()[:12]) or bool(
+        re.search(r"\b(more|different|additional|extra|on top)\b", message, re.IGNORECASE)
+    )
+    wants_total = bool(re.search(r"\b(fresh|total|new list|in all|altogether)\b", message, re.IGNORECASE))
+    if not (wants_more or wants_total):
+        return None
+    last = state["last_result"]
+    state["intent"] = "stock_list"
+    state["slots"] = {**last["slots"], "stock_count": n}
+    if wants_total:
+        state["slots"].pop("exclude_symbols", None)
+    else:
+        state["slots"]["exclude_symbols"] = list(last["shown"])
+    body = await _run_flow(state, Extraction(intent="stock_list", slots=Slots()), master, message)
+    await _finish_turn(session_id, state, message, body["text"])
+    return {
+        "session_id": session_id,
+        "intent": "stock_list",
+        "collected": _collected_view(state),
+        "sources": [],
+        **body,
+    }
+
+
+_PENNY_RE = re.compile(r"\b(penny|cheap(?:est)? stocks?|low[- ]?priced|multibagger)\b", re.IGNORECASE)
+_PRICE_UNDER_RE = re.compile(r"\b(?:under|below|less than|upto|up to|within)\s*(?:rs\.?|inr|₹)?\s*(\d{1,4})\b", re.IGNORECASE)
+_PENNY_PRICES = (10, 20)  # what people usually mean by a penny stock: a share under Rs 10-20
+_PENNY_SMALL_CHIP = "Include smaller companies (riskier)"
+_PENNY_SAFE_CHIP = "Keep the usual safer list"
+
+
+def _penny_chips() -> list[str]:
+    return [*(f"Under ₹{p} a share" for p in _PENNY_PRICES), _PENNY_SMALL_CHIP, _PENNY_SAFE_CHIP]
+
+
+def _needs_penny_question(state: dict[str, Any], message: str, intent: str) -> bool:
+    return intent == "stock_list" and bool(_PENNY_RE.search(message)) and "penny_choice" not in state["slots"]
+
+
+def _penny_question(state: dict[str, Any], ex: Extraction) -> dict[str, Any]:
+    state["clarify"] = {"kind": "penny", "slots": ex.slots.model_dump(exclude_none=True)}
+    return _body(
+        "Quick check: what share price counts as \"penny\" for you? Most people mean a share priced under "
+        "₹10-20. Those are usually small or struggling companies that trade thinly and can swing "
+        "wildly, so my normal list leaves them out, but I can search for them and show the risks.",
+        needs_input=True,
+        suggestions=_penny_chips(),
+    )
+
+
+def _penny_choice(message: str) -> tuple[str, int | None] | None:
+    """(choice, price cap) from the person's reply, or None if it was something else."""
+    lowered = message.lower()
+    price = _PRICE_UNDER_RE.search(message)
+    if price:
+        return "price", int(price.group(1))
+    if "smaller" in lowered or "riskier" in lowered:
+        return "small", None
+    if "safer" in lowered or "usual" in lowered or "keep" in lowered:
+        return "safe", None
+    return None
+
+
+async def _run_penny_flow(
+    state: dict[str, Any], saved: dict[str, Any], choice: str, cap: int | None, master: list[dict[str, str]], message: str
+) -> dict[str, Any]:
+    ex = Extraction(intent="stock_list", slots=Slots(**saved))
+    _start_flow(state, ex)
+    _apply_slots(state, ex)
+    state["slots"]["penny_choice"] = choice
+    if choice == "price":
+        # A real penny search has to look at small companies, so the size floor is lowered too.
+        state["slots"]["price_cap"] = cap
+        state["slots"]["include_small"] = True
+    elif choice == "small":
+        state["slots"]["include_small"] = True
+    return await _run_flow(state, ex, master, message)
+
+
+async def _answer_penny_question(
+    session_id: str, state: dict[str, Any], message: str, pending: dict[str, Any], master: list[dict[str, str]]
+) -> dict[str, Any] | None:
+    picked = _penny_choice(message)
+    if picked is None:
+        return None
+    body = await _run_penny_flow(state, pending["slots"], picked[0], picked[1], master, message)
+    await _finish_turn(session_id, state, message, body["text"])
+    return {
+        "session_id": session_id,
+        "intent": "stock_list",
+        "collected": _collected_view(state),
+        "sources": [],
+        **body,
+    }
+
+
+_NO_CROSS_QUESTION = frozenset({"answer", "off_topic", "guardrail"})
+
+
+def _model_question(state: dict[str, Any], ex: Extraction, message: str) -> dict[str, Any] | None:
+    """The model's own clarifying question, when it judged the message ambiguous. Asked at most
+    once per request, only if the text passes the safety check, and never in place of the
+    deterministic "N more stocks" question."""
+    if (
+        not ex.clarify
+        or ex.source != "llm"
+        or ex.intent in _NO_CROSS_QUESTION
+        or _needs_more_clarification(state, ex, message, ex.intent)
+        or not chat_ai.passes_ai_check(ex.clarify)
+    ):
+        return None
+    options = [o.strip() for o in ex.clarify_options if o.strip() and len(o) <= 70 and chat_ai.passes_ai_check(o)]
+    logger.info("Cross-question: the model asked for clarification (intent=%s)", ex.intent)
+    return _body(ex.clarify.strip(), needs_input=True, suggestions=options[:3] or list(STARTER_SUGGESTIONS))
+
+
 async def _dispatch(
     state: dict[str, Any], ex: Extraction, message: str, master: list[dict[str, str]]
 ) -> tuple[str, dict[str, Any]]:
     intent = ex.intent
+    if _needs_more_clarification(state, ex, message, intent):
+        return "stock_list", _more_question(state, ex, message)
+    if _needs_penny_question(state, message, intent):
+        stated = _PRICE_UNDER_RE.search(message)
+        if stated:
+            body = await _run_penny_flow(
+                state, ex.slots.model_dump(exclude_none=True), "price", int(stated.group(1)), master, message
+            )
+            return "stock_list", body
+        return "stock_list", _penny_question(state, ex)
     last = state.get("last_result")
     if (
         intent == "answer"
@@ -650,6 +871,9 @@ async def _dispatch(
 
     if intent == "off_topic":
         return intent, _off_topic_reply()
+    researched = await _research_reply(intent, message)
+    if researched is not None:
+        return researched
     if intent == "fund_list":
         _apply_slots(state, ex)
         return intent, await _ranked_funds_reply(state)
@@ -684,7 +908,19 @@ async def _dispatch(
         return intent, await chat_market.market_overview_reply()
     if intent == "portfolio_help":
         return intent, await chat_market.portfolio_help_reply()
-    return "unclear", _unclear_reply(ex)
+    reply = _unclear_reply(ex)
+    asked = await chat_ai.write(chat_ai.TASKS["clarify"], message, reference=reply["text"])
+    if asked:
+        reply["text"] = asked
+    return "unclear", reply
+
+
+async def _finish_turn(session_id: str, state: dict[str, Any], message: str, reply: str) -> None:
+    """Record the turn in the session (Redis) and in long-term memory (pgvector)."""
+    add_turn(state, message, reply)
+    await save_session(session_id, state)
+    chat_memory.remember_in_background(session_id, "user", message)
+    chat_memory.remember_in_background(session_id, "assistant", reply)
 
 
 async def _ask_confirmation(
@@ -700,8 +936,7 @@ async def _ask_confirmation(
         suggestions=list(CONFIRM_CHIPS),
         hitl={"required": True, "kind": kind, "status": "awaiting_confirmation"},
     )
-    add_turn(state, message, body["text"])
-    await save_session(session_id, state)
+    await _finish_turn(session_id, state, message, body["text"])
     return {
         "session_id": session_id,
         "intent": "guardrail",
@@ -731,8 +966,7 @@ async def _finish_confirmation(
             suggestions=["What is risk vs return?", "What is diversification?"],
             hitl={"required": True, "kind": pending["kind"], "status": "declined"},
         )
-    add_turn(state, message, body["text"])
-    await save_session(session_id, state)
+    await _finish_turn(session_id, state, message, body["text"])
     return {
         "session_id": session_id,
         "intent": "guardrail",
@@ -742,8 +976,9 @@ async def _finish_confirmation(
     }
 
 
-async def chat_turn(session_id: str, message: str) -> dict[str, Any]:
+async def chat_turn(session_id: str, message: str, research: bool = False) -> dict[str, Any]:
     message = message.strip()
+    research_mode.set(research)
     if _RESET_RE.search(message):
         state = await reset_session(session_id)
         body = _body(
@@ -754,7 +989,17 @@ async def chat_turn(session_id: str, message: str) -> dict[str, Any]:
         return {"session_id": session_id, "intent": None, "collected": _collected_view(state), "sources": [], **body}
 
     state = await load_session(session_id)
+    conversation_context.set(await chat_memory.build_context(session_id, state, message))
     master = await load_symbol_master()
+    pending_more = state.pop("clarify", None)
+    if pending_more and pending_more.get("kind") == "more_stocks" and state.get("last_result"):
+        answered = await _answer_more_question(session_id, state, message, pending_more, master)
+        if answered is not None:
+            return answered
+    if pending_more and pending_more.get("kind") == "penny":
+        answered = await _answer_penny_question(session_id, state, message, pending_more, master)
+        if answered is not None:
+            return answered
     pending_confirm = state.pop("confirm", None)
     if pending_confirm and (_YES_RE.match(message) or _NO_RE.match(message)):
         return await _finish_confirmation(session_id, state, message, pending_confirm)
@@ -768,8 +1013,7 @@ async def chat_turn(session_id: str, message: str) -> dict[str, Any]:
         state["slots"] = dict(pending_retry["slots"])
         retry_ex = Extraction(intent=pending_retry["intent"], slots=Slots())
         body = await _run_flow(state, retry_ex, master, message)
-        add_turn(state, message, body["text"])
-        await save_session(session_id, state)
+        await _finish_turn(session_id, state, message, body["text"])
         return {
             "session_id": session_id,
             "intent": pending_retry["intent"],
@@ -777,15 +1021,22 @@ async def chat_turn(session_id: str, message: str) -> dict[str, Any]:
             "sources": [],
             **body,
         }
+    # The answer to a question we asked is read together with the request it was about.
+    pending_q = state.pop("clarify_q", None)
+    effective = f"{pending_q['original']} ({message})" if pending_q else message
     ex = await extract(
-        message,
+        effective,
         last_asked=state["last_asked"],
         has_prior_plan=state.get("last_result") is not None or state["intent"] is not None,
         master=master,
     )
-    intent, body = await _dispatch(state, ex, message, master)
-    add_turn(state, message, body["text"])
-    await save_session(session_id, state)
+    question = None if pending_q else _model_question(state, ex, effective)
+    if question is not None:
+        state["clarify_q"] = {"original": message}
+        intent, body = "unclear", question
+    else:
+        intent, body = await _dispatch(state, ex, effective, master)
+    await _finish_turn(session_id, state, message, body["text"])
     return {
         "session_id": session_id,
         "intent": intent,

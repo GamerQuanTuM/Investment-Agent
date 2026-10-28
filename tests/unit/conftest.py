@@ -13,7 +13,9 @@ from investment_agent.research import (
     chat,
     chat_ai,
     chat_intent,
+    chat_memory,
     chat_session,
+    consultant,
     education,
     stock_list_chat,
 )
@@ -89,6 +91,39 @@ def _chat_isolation(fake_redis: FakeRedis, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(education, "get_llm", no_llm)
     monkeypatch.setattr(chat_ai, "get_llm", no_llm)  # AI answers fall back to reviewed text
     monkeypatch.setattr(stock_list_chat, "get_llm", no_llm)
+    monkeypatch.setattr(consultant, "get_llm", no_llm)
+
+
+@pytest.fixture(autouse=True)
+def _no_chat_memory(monkeypatch: pytest.MonkeyPatch):
+    """Chat memory needs Postgres and Gemini; unit tests must never reach either."""
+
+    async def nothing(*args: Any, **kwargs: Any) -> list[dict[str, str]]:
+        return []
+
+    monkeypatch.setattr(chat_memory, "recall", nothing)
+    monkeypatch.setattr(chat_memory, "remember", nothing)
+
+
+async def _none() -> None:
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _no_research_network(monkeypatch: pytest.MonkeyPatch):
+    """The research consultant's tools (web search, news, macro) must never reach the network."""
+
+    async def nothing(*args: Any, **kwargs: Any) -> list[Any]:
+        return []
+
+    async def no_macro() -> dict[str, Any]:
+        return {}
+
+    monkeypatch.setattr(consultant, "tavily_search", nothing)
+    monkeypatch.setattr(consultant, "get_news", nothing)
+    monkeypatch.setattr(consultant, "get_macro_snapshot", no_macro)
+    monkeypatch.setattr(consultant, "cache_get", lambda *a, **k: _none())
+    monkeypatch.setattr(consultant, "cache_set", nothing)
 
 
 @pytest.fixture(autouse=True)

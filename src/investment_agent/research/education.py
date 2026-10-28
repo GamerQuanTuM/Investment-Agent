@@ -17,6 +17,7 @@ from typing import Any
 
 from investment_agent.llm.factory import extract_text, get_llm
 from investment_agent.research import chat_ai
+from investment_agent.research.chat_memory import conversation_context
 from investment_agent.research.evidence import Evidence, SourceType
 from investment_agent.research.formatting import inr
 from investment_agent.research.glossary import (
@@ -112,8 +113,11 @@ def glossary_answer(entry: GlossaryEntry, amount_inr: float | None) -> dict[str,
 async def _llm_explain(question: str) -> str | None:
     try:
         model = get_llm("cheap")
+        context = conversation_context.get()
+        history = f"Conversation so far:\n{context}\n\n" if context else ""
         reply = await asyncio.wait_for(
-            model.ainvoke(f"{EDUCATION_SYSTEM_PROMPT}\n\nQuestion: {question}"), LLM_TIMEOUT_SECONDS
+            model.ainvoke(f"{EDUCATION_SYSTEM_PROMPT}\n\n{history}Question: {question}"),
+            LLM_TIMEOUT_SECONDS,
         )
         text = extract_text(reply.content).strip()
     except Exception as exc:

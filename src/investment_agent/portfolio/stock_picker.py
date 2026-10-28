@@ -317,6 +317,7 @@ def build_stock_plan(
 ) -> dict[str, Any]:
     """Select and size a diversified list from already-filtered `candidates`."""
     target = clamp_count(count)
+    asked = count or target
     risk = _effective_risk(risk_profile, experience_level)
     caveats: list[str] = []
     ranked = sorted(candidates, key=lambda c: (-(c.overall or 0.0), c.symbol))
@@ -406,10 +407,16 @@ def build_stock_plan(
         for sector, amount in sorted(sector_totals.items(), key=lambda kv: -kv[1])
     ]
 
+    if asked > target:
+        caveats.append(
+            f"You asked for {asked} stocks, but one list is capped at {target} so each position stays "
+            "meaningful. Ask for a smaller number, or a bigger amount, to go further."
+        )
     if len(rows) < target:
         caveats.append(
-            f"You asked for {target} stocks but only {len(rows)} fit the data, liquidity, "
-            "diversification and whole-share checks at this budget."
+            f"You asked for {asked} stocks but only {len(rows)} fit the data, liquidity, "
+            f"diversification and whole-share checks at this budget (each position would be about "
+            f"{inr(budget / max(1, asked))}, and many shares cost more than that)."
         )
     if relaxed:
         caveats.append(

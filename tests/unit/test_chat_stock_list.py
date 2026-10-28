@@ -277,3 +277,56 @@ async def test_portfolio_help_reports_concentration_and_alerts(monkeypatch: pyte
     assert "Energy at 80" in result["text"]
     assert "AAA is down -20.0%" in result["text"]
     assert "not an instruction to buy or sell" in result["text"]
+
+
+async def test_more_stocks_is_ambiguous_so_the_agent_asks_which_was_meant(universe):
+    session_id = _sid()
+    first = await chat.chat_turn(session_id, "Suggest 10 stocks for Rs 15000")
+    shown = [r["symbol"] for r in first["stock_plan"]["rows"]]
+    asked = await chat.chat_turn(session_id, "More 20 stock which I can hold for 1 year")
+    assert asked["needs_input"] and not asked.get("stock_plan")
+    assert asked["suggestions"] == ["20 more, different from these", "A fresh list of 20 in total"]
+
+    extra = await chat.chat_turn(session_id, "20 more, different from these")
+    new_symbols = [r["symbol"] for r in extra["stock_plan"]["rows"]]
+    assert new_symbols and not set(new_symbols) & set(shown)
+    assert "separate list" in extra["text"]
+    assert any("You asked for 20 stocks" in c for c in extra["stock_plan"]["caveats"])
+
+
+async def test_fresh_list_choice_rebuilds_one_bigger_list_and_names_the_new_stocks(universe):
+    session_id = _sid()
+    first = await chat.chat_turn(session_id, "Suggest 10 stocks for Rs 15000")
+    first_symbols = [r["symbol"] for r in first["stock_plan"]["rows"]]
+    await chat.chat_turn(session_id, "More 20 stock which I can hold for 1 year")
+    total = await chat.chat_turn(session_id, "A fresh list of 20 in total")
+    symbols = [r["symbol"] for r in total["stock_plan"]["rows"]]
+    assert set(first_symbols) <= set(symbols)
+    if len(symbols) > len(first_symbols):
+        assert "still on this list" in total["text"]
+
+
+async def test_model_cross_questions_once_when_the_request_is_ambiguous(use_llm, universe):
+    llm = use_llm(
+        '{"clarify": "Do you want to buy shares directly, or invest through a fund?",'
+        ' "options": ["Shares directly", "Through a fund"],'
+        ' "intent": "stock_list", "slots": {"amount_inr": 15000}}'
+    )
+    session_id = _sid()
+    asked = await chat.chat_turn(session_id, "I want to put some money in the market")
+    assert asked["needs_input"] and asked["text"].startswith("Do you want to buy shares")
+    assert asked["suggestions"] == ["Shares directly", "Through a fund"]
+    assert not asked.get("stock_plan")
+
+    llm.reply = '{"clarify": "Again?", "options": [], "intent": "stock_list", "slots": {"amount_inr": 15000}}'
+    answered = await chat.chat_turn(session_id, "Shares directly")
+    assert answered["text"] != "Again?"  # it never asks twice in a row
+    assert "I want to put some money in the market" in llm.prompts[-1]  # the answer is read with the request
+
+
+async def test_unclear_message_gets_a_model_written_clarifying_question(use_education_llm):
+    llm = use_education_llm("- Do you want **stocks for an amount**, or a **monthly SIP**?")
+    result = await chat.chat_turn(_sid(), "hmm what about that thing")
+    assert result["intent"] == "unclear"
+    assert "stocks for an amount" in result["text"]
+    assert llm.prompts and "ONE short, friendly clarifying question" in llm.prompts[-1]

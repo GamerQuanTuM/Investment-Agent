@@ -1,4 +1,5 @@
 from investment_agent.db.models.base import Base, TimestampMixin
+from investment_agent.db.models.chat import ChatMemory
 from investment_agent.db.models.market import (
     DailyBar,
     EvidenceRecord,
@@ -12,6 +13,7 @@ from investment_agent.db.models.user import InvestmentProfile, User
 
 __all__ = [
     "Base",
+    "ChatMemory",
     "DailyBar",
     "EvidenceRecord",
     "FundamentalSnapshot",

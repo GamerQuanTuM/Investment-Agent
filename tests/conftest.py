@@ -34,3 +34,13 @@ async def async_client() -> AsyncGenerator[AsyncClient, None]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+
+
+@pytest.fixture(autouse=True)
+def _no_tavily_key(monkeypatch):
+    """A developer's real TAVILY_API_KEY in .env must never make a unit test call the network."""
+    from types import SimpleNamespace
+
+    from investment_agent.market import tavily
+
+    monkeypatch.setattr(tavily, "get_settings", lambda: SimpleNamespace(TAVILY_API_KEY=None))

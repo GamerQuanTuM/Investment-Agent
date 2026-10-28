@@ -13,9 +13,11 @@ import {
   Gauge,
   Check,
   Send,
+  Globe,
 } from "lucide-react";
-import { sendChat } from "@/lib/api";
-import { ChatCollected, ChatReply, EvidenceItem, GuidanceNote, StockPlan } from "@/lib/types";
+import { sendChat, streamChat } from "@/lib/api";
+import { ChatCollected, ChatReply, EvidenceItem, GuidanceNote, ResearchStep, StockPlan } from "@/lib/types";
+import { ResearchProgress, ResearchSummary, mergeStep } from "@/components/ResearchSteps";
 import { DataUnavailableTile, StockPlanCard } from "@/components/StockPlanCard";
 import { RichText } from "@/components/RichText";
 import { SourceChips } from "@/components/SourceChips";
@@ -36,6 +38,8 @@ type Bubble = {
   suggestions?: string[];
   dataUnavailable?: boolean;
   isError?: boolean;
+  steps?: ResearchStep[];
+  researchSeconds?: number;
 };
 
 const EMPTY_COLLECTED: ChatCollected = {
@@ -202,19 +206,26 @@ export default function ChatPage() {
   const [collected, setCollected] = useState<ChatCollected>(EMPTY_COLLECTED);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [research, setResearch] = useState(false);
+  const [liveSteps, setLiveSteps] = useState<ResearchStep[]>([]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, busy]);
+  }, [messages, busy, liveSteps]);
 
   const send = async (text: string) => {
     if (!text.trim() || busy) return;
     setInput("");
     setMessages((current) => [...current, { role: "user", text, time: timestamp() }]);
     setBusy(true);
+    setLiveSteps([]);
+    let steps: ResearchStep[] = [];
     try {
-      const reply = await sendChat(sessionId, text);
+      const { data: reply, seconds } = await streamChat(sessionId, text, research, (step) => {
+        steps = mergeStep(steps, step);
+        setLiveSteps(steps);
+      });
       setCollected(reply.collected);
       setMessages((current) => [
         ...current,
@@ -232,6 +243,8 @@ export default function ChatPage() {
           suggestions: reply.suggestions,
           dataUnavailable: reply.data_status === "DATA_UNAVAILABLE",
           isError: reply.error,
+          steps,
+          researchSeconds: seconds,
         },
       ]);
     } catch (err) {
@@ -241,6 +254,7 @@ export default function ChatPage() {
       ]);
     } finally {
       setBusy(false);
+      setLiveSteps([]);
     }
   };
 
@@ -320,6 +334,7 @@ export default function ChatPage() {
                           : "bg-(--section-chat) text-white"
                     }`}
                   >
+                    {isAgent && message.steps && <ResearchSummary steps={message.steps} seconds={message.researchSeconds} />}
                     {message.dataUnavailable ? (
                       <DataUnavailableTile message={message.text} />
                     ) : (
@@ -366,22 +381,44 @@ export default function ChatPage() {
               <span className="icon-badge h-7 w-7 shrink-0 bg-(--section-chat-soft) text-(--section-chat)">
                 <Bot className="h-3.5 w-3.5" />
               </span>
-              <div className="card-row flex max-w-[60%] items-center gap-1.5 px-3.5 py-2.5 text-sm text-(--text-secondary)">
-                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-(--text-muted) [animation-delay:-0.2s]" />
-                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-(--text-muted) [animation-delay:-0.1s]" />
-                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-(--text-muted)" />
-              </div>
+              {research || liveSteps.length > 0 ? (
+                <ResearchProgress steps={liveSteps} />
+              ) : (
+                <div className="card-row flex max-w-[60%] items-center gap-1.5 px-3.5 py-2.5 text-sm text-(--text-secondary)">
+                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-(--text-muted) [animation-delay:-0.2s]" />
+                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-(--text-muted) [animation-delay:-0.1s]" />
+                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-(--text-muted)" />
+                </div>
+              )}
             </div>
           )}
         </div>
 
         <form onSubmit={submit} className="flex items-center gap-2 border-t border-(--border-subtle) p-3">
+          <button
+            type="button"
+            onClick={() => setResearch((on) => !on)}
+            aria-pressed={research}
+            title="Research: answer from live web sources only, with citations. Stock and market questions only."
+            className={`flex shrink-0 items-center gap-1.5 rounded-xl border px-3 py-2.5 text-sm font-semibold transition-colors ${
+              research
+                ? "border-(--section-chat) bg-(--section-chat-soft) text-(--section-chat)"
+                : "border-(--border-subtle) bg-(--surface-2) text-(--text-secondary) hover:bg-(--surface-3)"
+            }`}
+          >
+            <Globe className="h-3.5 w-3.5" />
+            Research
+          </button>
           <label className="sr-only" htmlFor="chat-input">Message the agent</label>
           <input
             id="chat-input"
             value={input}
             onChange={(event) => setInput(event.target.value)}
-            placeholder="Ask anything, e.g. “Suggest 10 stocks for ₹10,000”"
+            placeholder={
+              research
+                ? "Research mode: ask about a stock or the market, e.g. “Why is TCS in the news?”"
+                : "Ask anything, e.g. “Suggest 10 stocks for ₹10,000”"
+            }
             className="flex-1 rounded-xl border border-(--border-subtle) bg-(--surface-2) px-3.5 py-2.5 text-sm text-(--text-primary) outline-none transition-colors focus:border-(--section-chat) focus:bg-(--surface-1)"
           />
           <button

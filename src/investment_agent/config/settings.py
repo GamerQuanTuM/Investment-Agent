@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str | None = None
     OLLAMA_BASE_URL: str = "http://localhost:11434"
 
+    # Chat memory (pgvector, Gemini embeddings on GOOGLE_API_KEY) and web search (Tavily)
+    TAVILY_API_KEY: str | None = None
+    CHAT_MEMORY_ENABLED: bool = True
+    EMBEDDING_MODEL: str = "gemini-embedding-001"
+    # Must match the vector(N) column created by migration 004.
+    EMBEDDING_DIMENSIONS: int = 768
+
     # Database (PostgreSQL)
     POSTGRES_USER: str = "postgres"
     POSTGRES_PASSWORD: str = "postgres"

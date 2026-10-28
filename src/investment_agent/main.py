@@ -66,7 +66,11 @@ def create_app() -> FastAPI:
 
 app = create_app()
 
-if __name__ == "__main__":
+def dev() -> None:
     import uvicorn
 
     uvicorn.run("investment_agent.main:app", host=settings.HOST, port=settings.PORT, reload=True)
+
+
+if __name__ == "__main__":
+    dev()
